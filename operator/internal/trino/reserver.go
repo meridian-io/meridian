@@ -17,6 +17,7 @@ const (
 	retryBackoff    = 200 * time.Millisecond
 	poolLabel       = "meridian.io/cluster-pool"
 	profileLabel    = "meridian.io/profile"
+	workloadLabel   = "meridian.io/workload"
 	pollInterval    = 2 * time.Second
 	poolWaitTimeout = 30 * time.Second
 )
@@ -30,6 +31,7 @@ type ReservationRequest struct {
 	ClientID      string
 	ReservationID string
 	Profile       string
+	Workload      string
 	Namespace     string
 }
 
@@ -136,12 +138,17 @@ func (r *ClusterReserver) findExistingReservation(ctx context.Context, req Reser
 	return nil, nil
 }
 
-// pickIdleCluster returns the oldest healthy idle cluster matching the profile.
+// pickIdleCluster returns the oldest healthy idle cluster matching the profile and optional workload.
 func (r *ClusterReserver) pickIdleCluster(ctx context.Context, req ReservationRequest) (*meridianv1alpha1.Cluster, error) {
+	labels := client.MatchingLabels{profileLabel: req.Profile}
+	if req.Workload != "" {
+		labels[workloadLabel] = req.Workload
+	}
+
 	list := &meridianv1alpha1.ClusterList{}
 	if err := r.client.List(ctx, list,
 		client.InNamespace(req.Namespace),
-		client.MatchingLabels{profileLabel: req.Profile},
+		labels,
 	); err != nil {
 		return nil, err
 	}

@@ -20,6 +20,7 @@ type ReservationHandler struct {
 type reservationRequest struct {
 	ReservationID string `json:"reservationId"`
 	Profile       string `json:"profile"`
+	Workload      string `json:"workload,omitempty"`
 }
 
 type reservationResponse struct {
@@ -54,6 +55,7 @@ func (h *ReservationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ClientID:      clientID,
 		ReservationID: req.ReservationID,
 		Profile:       req.Profile,
+		Workload:      req.Workload,
 		Namespace:     h.Namespace,
 	})
 	if err != nil {

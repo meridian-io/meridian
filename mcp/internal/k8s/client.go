@@ -85,6 +85,18 @@ func (c *Client) ListClusters(ctx context.Context, namespace string) ([]unstruct
 	return list.Items, nil
 }
 
+// ListClustersWithSelector returns Cluster CRs matching a label selector string.
+func (c *Client) ListClustersWithSelector(ctx context.Context, namespace, labelSelector string) ([]unstructured.Unstructured, error) {
+	ns := c.resolveNamespace(namespace)
+	list, err := c.Dynamic.Resource(ClusterGVR).Namespace(ns).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
 // GetCluster returns a single Cluster CR by name.
 func (c *Client) GetCluster(ctx context.Context, name, namespace string) (*unstructured.Unstructured, error) {
 	ns := c.resolveNamespace(namespace)

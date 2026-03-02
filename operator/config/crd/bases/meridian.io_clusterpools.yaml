@@ -27,6 +27,9 @@ spec:
     - jsonPath: .status.pendingReplicas
       name: Pending
       type: integer
+    - jsonPath: .spec.workload
+      name: Workload
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -88,6 +91,9 @@ spec:
                 - image
                 - profile
                 type: object
+              workload:
+                description: Workload tags all clusters in this pool with a workload type (e.g. "analytics", "etl"). Used to route reservations without specifying a cluster name or profile.
+                type: string
             required:
             - replicas
             - template
