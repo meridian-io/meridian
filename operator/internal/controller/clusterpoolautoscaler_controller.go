@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -70,8 +71,11 @@ func (r *ClusterPoolAutoscalerController) Reconcile(ctx context.Context, req ctr
 	desired := current
 
 	if utilization >= threshold {
-		// Scale up — add 20% more capacity, capped at MaxReplicas.
-		desired = min32(int32(float64(current)*1.2)+1, autoscaler.Spec.MaxReplicas)
+		// Scale up to the minimum pool size that keeps utilization below threshold.
+		// desired = ceil(reserved / threshold) ensures reserved/desired < threshold.
+		needed := int32(math.Ceil(float64(pool.Status.ReservedReplicas) / threshold))
+		// Always increase by at least 1 so we make progress even when reserved=0.
+		desired = min32(max32(needed, current+1), autoscaler.Spec.MaxReplicas)
 		log.Info("scaling up pool",
 			"pool", pool.Name,
 			"utilization", fmt.Sprintf("%.2f", utilization),

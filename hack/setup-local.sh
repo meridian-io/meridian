@@ -79,6 +79,12 @@ bash hack/patch-status.sh
 green "==> Building meridian-mcp binary"
 (cd mcp && go build -o ../bin/meridian-mcp ./cmd/meridian-mcp)
 
+green "==> Building meridian-operator binary"
+(cd operator && go build -o ../bin/meridian-operator .)
+
+green "==> Applying credential rotation test fixtures (Phase 4)"
+kubectl apply -f operator/config/samples/test-k8s-secret.yaml
+
 green "==> Creating trino-local Cluster CR (points to Docker Compose Trino)"
 kubectl apply -f hack/cluster-local.yaml
 kubectl patch cluster trino-local -n "$NS" --subresource=status --type=merge -p '{
@@ -94,12 +100,20 @@ green "==> Setup complete"
 echo ""
 echo "  kind cluster : $CLUSTER_NAME"
 echo "  namespace    : $NS"
-echo "  binary       : ./bin/meridian-mcp"
+echo "  binaries     : ./bin/meridian-mcp  ./bin/meridian-operator"
 echo ""
-echo "Next — start Trino + MySQL:"
-echo "  cd hack && docker compose up -d"
+echo "Next — start Trino + MySQL (+ optional Vault):"
+echo "  cd hack && docker compose up -d trino mysql"
+echo "  cd hack && docker compose up -d vault   # optional: for vault provider testing"
+echo "  ./hack/seed-vault.sh                    # optional: seed vault with test secrets"
 echo ""
-echo "Run unit/protocol tests (no Docker needed):"
+echo "Run the operator locally (in a separate terminal):"
+echo "  ./bin/meridian-operator --namespace meridian --credential-provider kubernetes"
+echo ""
+echo "Run credential rotation E2E test:"
+echo "  ./hack/e2e-rotation-test.sh"
+echo ""
+echo "Run MCP unit/protocol tests (no Docker needed):"
 echo "  ./hack/test-mcp.sh"
 echo ""
 echo "Run full E2E catalog test (needs docker compose up):"

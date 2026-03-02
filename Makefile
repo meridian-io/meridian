@@ -45,7 +45,7 @@ docker-build-mcp:
 
 ## Build the operator binary
 build:
-	cd operator && go build -o ../bin/$(BINARY) ./...
+	cd operator && go build -o ../bin/$(BINARY) .
 
 ## Run operator tests
 test:

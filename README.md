@@ -4,17 +4,17 @@
 
 **[meridianctl.com](https://meridianctl.com)**
 
-Meridian keeps a warm pool of pre-warmed Trino clusters that are reserved instantly — no cold start, no provisioning delay. A Kubernetes operator manages the full cluster lifecycle (`Empty → Pending → Idle → Reserved`), a pool controller maintains desired warm capacity, and an autoscaler adjusts replica count based on utilization.
+Meridian keeps a hot standby pool of pre-provisioned Trino clusters that are reserved instantly — no cold start, no provisioning delay. A Kubernetes operator manages the full cluster lifecycle (`Empty → Pending → Idle → Reserved`), a pool controller maintains desired standby capacity, and an autoscaler adjusts replica count based on utilization.
 
 On top of the operator, an **MCP server** exposes 19 management operations as tools for AI agents — so Claude or any MCP client can provision clusters, add catalogs, rotate credentials, and run queries through natural language.
 
-The MCP server works against **any Trino deployment on Kubernetes today** — no operator required. Install the operator to unlock warm pool management and instant reservation.
+The MCP server works against **any Trino deployment on Kubernetes today** — no operator required. Install the operator to unlock hot standby pool management and instant reservation.
 
 ---
 
 ## MCP Server — Start Here
 
-The `meridian-mcp` binary is a standalone MCP server that works against **any Trino deployment on Kubernetes**. Install the operator for the full warm pool experience; the MCP server is useful on day one without it.
+The `meridian-mcp` binary is a standalone MCP server that works against **any Trino deployment on Kubernetes**. Install the operator for the full hot standby pool experience; the MCP server is useful on day one without it.
 
 ### Install
 
@@ -212,7 +212,7 @@ The operator manages the full Trino cluster lifecycle on Kubernetes. Three contr
 | Controller | Responsibility |
 |---|---|
 | `ClusterController` | Lifecycle per cluster: `Empty → Pending → Idle → Reserved → Failed`. Creates coordinator Deployment, worker Deployment, and coordinator Service. Health-gates transition to Idle. Handles coordinator eviction recovery. |
-| `ClusterPoolController` | Maintains warm pool: creates clusters to reach `spec.replicas`, deletes oldest idle cluster when over-provisioned (one per cycle), purges failed clusters immediately. |
+| `ClusterPoolController` | Maintains hot standby pool: creates clusters to reach `spec.replicas`, deletes oldest idle cluster when over-provisioned (one per cycle), purges failed clusters immediately. |
 | `ClusterPoolAutoscalerController` | Adjusts `ClusterPool.spec.replicas` based on utilization (`reserved / total`). Scales up at ≥ threshold (default 70%), scales down at < threshold × 0.75 (hysteresis). |
 
 ### Build and Run Locally
@@ -433,7 +433,7 @@ kubectl apply -f operator/config/crd/bases/
 | 24 | `kubectl get cluster test-cluster -n meridian -o jsonpath='{.status.phase}'` | Returns `Reserved` |
 | 25 | `kubectl patch cluster test-cluster -n meridian --type=merge -p '{"spec":{"clientId":"","reservationId":""}}'` | Cluster transitions `Reserved` → `Idle`, `idleAt` refreshed |
 
-#### Warm Pool (ClusterPool)
+#### Hot Standby Pool (ClusterPool)
 
 | # | Action | Expected result |
 |---|---|---|
@@ -457,7 +457,7 @@ kubectl apply -f operator/config/crd/bases/
 ```yaml
 # meridian.io/v1alpha1
 Cluster              — single Trino cluster lifecycle
-ClusterPool          — warm pool of N clusters
+ClusterPool          — hot standby pool of N clusters
 ClusterPoolAutoscaler — scale pool by reservation utilization
 ```
 
@@ -522,7 +522,7 @@ def release_trino_cluster(cluster):
 | Phase | Status | Description |
 |---|---|---|
 | **Phase 1 — MCP Server** | ✅ Complete | 19 MCP tools, Go binary, stdio + SSE transport, local dev setup, TTL query result cache (5min for schema metadata, opt-in for queries, singleflight deduplication, auto-invalidation on catalog changes), query tagging (`mcp_query_id` for audit correlation), CSV file export for large result sets, query execution plan via `explain_query` |
-| **Phase 2 — Kubernetes Operator** | ✅ Complete | ClusterController (Empty→Pending→Idle→Reserved→Idle), ClusterPoolController (warm pool, gradual scale-down, oldest-first selection), ClusterPoolAutoscalerController (utilization-based with hysteresis), REST reservation API (mTLS, idempotent, optimistic concurrency), 14 unit tests |
+| **Phase 2 — Kubernetes Operator** | ✅ Complete | ClusterController (Empty→Pending→Idle→Reserved→Idle), ClusterPoolController (hot standby pool, gradual scale-down, oldest-first selection), ClusterPoolAutoscalerController (utilization-based with hysteresis), REST reservation API (mTLS, idempotent, optimistic concurrency), 14 unit tests |
 | **Phase 3 — REST API** | ✅ Complete | `POST /api/v1/clusters/reservations` with mTLS, clientId from cert CN, ClusterReserver with optimistic concurrency and 5-retry loop |
 | **Phase 4 — Catalog & Credential Layer** | 📋 Planned | Vault / AWS Secrets Manager integration, secret rotation without cluster restart |
 | **Phase 5 — Web UI** | 📋 Planned | Next.js dashboard — cluster pool visualization, catalog management UI, audit trail viewer |

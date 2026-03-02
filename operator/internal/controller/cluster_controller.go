@@ -13,22 +13,38 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
+	"github.com/meridian-io/meridian/operator/internal/credentials"
+)
+
+const (
+	// clusterFinalizer guards against abrupt deletion of Reserved clusters
+	// and gives the controller a window for any pre-delete cleanup.
+	clusterFinalizer = "meridian.io/cluster-protection"
+
+	// pendingTimeout is the maximum time a cluster may remain Pending before
+	// being marked Failed (covers CrashLoopBackOff, OOMKilled, node full, etc.).
+	pendingTimeout = 10 * time.Minute
 )
 
 // ClusterController manages the lifecycle of individual Trino clusters.
 // Phase transitions: Empty → Pending → Idle → Reserved (or Failed at any point).
 type ClusterController struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme    *runtime.Scheme
+	Providers map[string]credentials.SecretProvider
+	Rotator   *credentials.Rotator
+	Cache     map[string]*credentials.SecretCache
 }
 
 // +kubebuilder:rbac:groups=meridian.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=meridian.io,resources=clusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list
 
 func (r *ClusterController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
@@ -39,6 +55,28 @@ func (r *ClusterController) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Handle deletion: run pre-delete cleanup then release the finalizer.
+	if !cluster.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, cluster)
+	}
+
+	// Ensure the protection finalizer is present on every live cluster.
+	// We do not return after adding it — the update triggers a re-queue,
+	// but we continue in this cycle to avoid an extra round-trip.
+	if !controllerutil.ContainsFinalizer(cluster, clusterFinalizer) {
+		controllerutil.AddFinalizer(cluster, clusterFinalizer)
+		if err := r.Update(ctx, cluster); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Credential rotation takes priority over lifecycle reconciliation.
+	// The annotation is set by the MCP rotate_credentials tool and cleared
+	// only after a successful rotation (or a non-retriable error).
+	if ann, ok := cluster.Annotations[credentials.AnnotationRotateCredentials]; ok && ann != "" {
+		return r.reconcileRotation(ctx, cluster, ann)
 	}
 
 	switch cluster.Status.Phase {
@@ -85,8 +123,17 @@ func (r *ClusterController) reconcilePending(ctx context.Context, cluster *merid
 }
 
 // reconcileHealthCheck verifies the cluster is healthy before marking it Idle.
+// If the coordinator has not become ready within pendingTimeout the cluster is
+// marked Failed so the pool controller can delete and replace it.
 func (r *ClusterController) reconcileHealthCheck(ctx context.Context, cluster *meridianv1alpha1.Cluster) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
+
+	// Guard: stuck-pending detection. creationTimestamp approximates when the
+	// cluster entered Pending (Empty → Pending transition is near-instant).
+	if time.Since(cluster.CreationTimestamp.Time) > pendingTimeout {
+		return r.setFailed(ctx, cluster,
+			fmt.Sprintf("coordinator not ready after %v — marking Failed for replacement", pendingTimeout))
+	}
 
 	healthy, err := r.isClusterHealthy(ctx, cluster)
 	if err != nil {
@@ -172,6 +219,20 @@ func (r *ClusterController) ensureCoordinatorRunning(ctx context.Context, cluste
 		return r.reconcilePending(ctx, cluster)
 	}
 	return ctrl.Result{}, nil
+}
+
+// reconcileDelete runs pre-delete cleanup and removes the protection finalizer
+// so Kubernetes can proceed with garbage-collecting the Cluster object and its
+// owned Deployments/Services (via owner references).
+func (r *ClusterController) reconcileDelete(ctx context.Context, cluster *meridianv1alpha1.Cluster) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+	if cluster.Status.Phase == meridianv1alpha1.ClusterPhaseReserved {
+		log.Info("deleting Reserved cluster — in-flight Trino queries may fail",
+			"cluster", cluster.Name,
+			"clientId", cluster.Spec.ClientID)
+	}
+	controllerutil.RemoveFinalizer(cluster, clusterFinalizer)
+	return ctrl.Result{}, r.Update(ctx, cluster)
 }
 
 func (r *ClusterController) setFailed(ctx context.Context, cluster *meridianv1alpha1.Cluster, reason string) (ctrl.Result, error) {
@@ -300,6 +361,132 @@ func (r *ClusterController) ensureService(ctx context.Context, cluster *meridian
 		},
 	}
 	return r.Create(ctx, svc)
+}
+
+// ── Credential rotation ───────────────────────────────────────────────────────
+
+// reconcileRotation handles the meridian.io/rotate-credentials annotation.
+// It parses the annotation, fetches the secret, and executes DROP + CREATE
+// on the live Trino cluster. Backoff is applied on failure; the annotation
+// is only cleared on success or a non-retriable error.
+func (r *ClusterController) reconcileRotation(ctx context.Context, cluster *meridianv1alpha1.Cluster, annotationValue string) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+
+	rotReq, err := credentials.ParseRotationAnnotation(annotationValue)
+	if err != nil {
+		return r.clearAnnotationAndFail(ctx, cluster, fmt.Sprintf("malformed rotation annotation: %v", err))
+	}
+
+	cache, ok := r.Cache[rotReq.Provider]
+	if !ok {
+		return r.clearAnnotationAndFail(ctx, cluster,
+			fmt.Sprintf("unknown credential provider %q — operator was not started with this provider", rotReq.Provider))
+	}
+
+	// Mark rotation in progress for visibility in kubectl / Web UI.
+	if cluster.Status.RotatingCatalog != rotReq.CatalogName {
+		cluster.Status.RotatingCatalog = rotReq.CatalogName
+		if err := r.Status().Update(ctx, cluster); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	secret, err := cache.Get(ctx, rotReq.SecretPath)
+	if err != nil {
+		return r.handleRotationFailure(ctx, cluster, fmt.Sprintf("fetch secret %q: %v", rotReq.SecretPath, err))
+	}
+
+	if err := r.Rotator.Rotate(ctx, cluster.Status.CoordinatorURL, rotReq.CatalogName, secret); err != nil {
+		// Reactive path: catalog was missing — creating it fresh counts as success.
+		if credentials.IsCatalogNotFound(err) {
+			log.Info("catalog not found during rotation — recreated from secret",
+				"cluster", cluster.Name, "catalog", rotReq.CatalogName)
+			return r.completeRotation(ctx, cluster, rotReq.CatalogName, cache, rotReq.SecretPath)
+		}
+		return r.handleRotationFailure(ctx, cluster, fmt.Sprintf("rotate catalog %q: %v", rotReq.CatalogName, err))
+	}
+
+	cache.Invalidate(rotReq.SecretPath)
+	log.Info("credential rotation complete", "cluster", cluster.Name, "catalog", rotReq.CatalogName)
+	return r.completeRotation(ctx, cluster, rotReq.CatalogName, cache, rotReq.SecretPath)
+}
+
+// completeRotation clears the annotation, resets failure counters, and records LastRotatedAt.
+func (r *ClusterController) completeRotation(ctx context.Context, cluster *meridianv1alpha1.Cluster, catalogName string, cache *credentials.SecretCache, secretPath string) (ctrl.Result, error) {
+	// Clear the annotation via a metadata-only patch to avoid conflicting with
+	// concurrent spec changes from the REST API.
+	patch := []byte(`{"metadata":{"annotations":{"` + credentials.AnnotationRotateCredentials + `":null}}}`)
+	if err := r.Patch(ctx, cluster, client.RawPatch(types.MergePatchType, patch)); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	now := metav1.Now()
+	cluster.Status.LastRotatedAt = &now
+	cluster.Status.RotationFailures = 0
+	cluster.Status.RotatingCatalog = ""
+	cluster.Status.Conditions = setCondition(cluster.Status.Conditions, metav1.Condition{
+		Type:               "CredentialRotation",
+		Status:             metav1.ConditionTrue,
+		Reason:             "RotationSucceeded",
+		Message:            fmt.Sprintf("Catalog %q rotated successfully", catalogName),
+		LastTransitionTime: now,
+	})
+	return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+// handleRotationFailure increments the failure counter and requeues with exponential backoff.
+func (r *ClusterController) handleRotationFailure(ctx context.Context, cluster *meridianv1alpha1.Cluster, reason string) (ctrl.Result, error) {
+	log.FromContext(ctx).Error(fmt.Errorf(reason), "rotation failed",
+		"cluster", cluster.Name,
+		"failures", cluster.Status.RotationFailures+1)
+
+	cluster.Status.RotationFailures++
+	cluster.Status.Conditions = setCondition(cluster.Status.Conditions, metav1.Condition{
+		Type:               "CredentialRotation",
+		Status:             metav1.ConditionFalse,
+		Reason:             "RotationFailed",
+		Message:            reason,
+		LastTransitionTime: metav1.Now(),
+	})
+	if err := r.Status().Update(ctx, cluster); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	backoff := credentials.BackoffDuration(cluster.Status.RotationFailures)
+	return ctrl.Result{RequeueAfter: backoff}, nil
+}
+
+// clearAnnotationAndFail handles non-retriable errors (bad annotation, unknown provider).
+// Clears the annotation so the operator does not loop, sets a Failed condition,
+// but does NOT change the cluster Phase — rotation failure ≠ cluster failure.
+func (r *ClusterController) clearAnnotationAndFail(ctx context.Context, cluster *meridianv1alpha1.Cluster, reason string) (ctrl.Result, error) {
+	log.FromContext(ctx).Error(fmt.Errorf(reason), "non-retriable rotation error", "cluster", cluster.Name)
+
+	patch := []byte(`{"metadata":{"annotations":{"` + credentials.AnnotationRotateCredentials + `":null}}}`)
+	if err := r.Patch(ctx, cluster, client.RawPatch(types.MergePatchType, patch)); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	cluster.Status.RotatingCatalog = ""
+	cluster.Status.Conditions = setCondition(cluster.Status.Conditions, metav1.Condition{
+		Type:               "CredentialRotation",
+		Status:             metav1.ConditionFalse,
+		Reason:             "RotationFailed",
+		Message:            reason,
+		LastTransitionTime: metav1.Now(),
+	})
+	return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+// setCondition upserts a condition into the conditions slice.
+func setCondition(conditions []metav1.Condition, newCond metav1.Condition) []metav1.Condition {
+	for i, c := range conditions {
+		if c.Type == newCond.Type {
+			conditions[i] = newCond
+			return conditions
+		}
+	}
+	return append(conditions, newCond)
 }
 
 func clusterLabels(cluster *meridianv1alpha1.Cluster) map[string]string {

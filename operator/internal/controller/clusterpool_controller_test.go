@@ -40,11 +40,17 @@ func poolCluster(pool *meridianv1alpha1.ClusterPool, suffix string, phase meridi
 			ResourceVersion: "1",
 			Labels:          map[string]string{poolLabel: pool.Name},
 		},
+		Spec: meridianv1alpha1.ClusterSpec{
+			// Image must match the pool template to avoid triggering rolling upgrade in tests.
+			Image: pool.Spec.Template.Image,
+		},
 		Status: meridianv1alpha1.ClusterStatus{Phase: phase},
 	}
 }
 
-// TestClusterPoolController_ScaleUp verifies that missing clusters are created.
+// TestClusterPoolController_ScaleUp verifies that the pool creates ONE cluster per reconcile
+// (gradual operations — prevents thundering-herd on the Kubernetes scheduler).
+// After N reconciles a pool of N clusters is reached.
 func TestClusterPoolController_ScaleUp(t *testing.T) {
 	pool := newPool("test-pool", "meridian", 3)
 	s := newTestScheme()
@@ -56,17 +62,18 @@ func TestClusterPoolController_ScaleUp(t *testing.T) {
 		Build()
 
 	r := &ClusterPoolController{Client: c, Scheme: s}
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: "test-pool", Namespace: "meridian"},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-pool", Namespace: "meridian"}}
 
-	list := &meridianv1alpha1.ClusterList{}
-	_ = c.List(context.Background(), list)
-	if len(list.Items) != 3 {
-		t.Errorf("expected 3 clusters created, got %d", len(list.Items))
+	// Each reconcile creates exactly one cluster.
+	for i := 1; i <= 3; i++ {
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("reconcile %d: unexpected error: %v", i, err)
+		}
+		list := &meridianv1alpha1.ClusterList{}
+		_ = c.List(context.Background(), list)
+		if len(list.Items) != i {
+			t.Errorf("after reconcile %d: expected %d clusters, got %d", i, i, len(list.Items))
+		}
 	}
 }
 

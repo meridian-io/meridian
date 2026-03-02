@@ -2,6 +2,9 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -14,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
+	"github.com/meridian-io/meridian/operator/internal/credentials"
 )
 
 func newTestScheme() *runtime.Scheme {
@@ -26,9 +30,10 @@ func newTestScheme() *runtime.Scheme {
 func newCluster(name, namespace string, phase meridianv1alpha1.ClusterPhase) *meridianv1alpha1.Cluster {
 	return &meridianv1alpha1.Cluster{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            name,
-			Namespace:       namespace,
-			ResourceVersion: "1",
+			Name:              name,
+			Namespace:         namespace,
+			ResourceVersion:   "1",
+			CreationTimestamp: metav1.Now(), // prevents pending-timeout from firing in tests
 		},
 		Spec: meridianv1alpha1.ClusterSpec{
 			Profile: "default",
@@ -248,5 +253,219 @@ func TestClusterController_FailedSkipped(t *testing.T) {
 	}
 	if result.Requeue || result.RequeueAfter != 0 {
 		t.Error("expected no requeue for Failed cluster")
+	}
+}
+
+// ── Credential rotation tests ─────────────────────────────────────────────────
+
+// newTrinoServer returns an httptest.Server that responds FINISHED to every
+// POST /v1/statement — simulates a Trino cluster accepting DDL statements.
+func newTrinoServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		type resp struct {
+			Stats struct {
+				State string `json:"state"`
+			} `json:"stats"`
+		}
+		var v resp
+		v.Stats.State = "FINISHED"
+		json.NewEncoder(w).Encode(v)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// newRotationController builds a ClusterController wired with the kubernetes
+// credential provider pointing at the fake client.
+func newRotationController(c interface{ Get(context.Context, types.NamespacedName, interface{ DeepCopyObject() runtime.Object }, ...interface{}) error }, s *runtime.Scheme, fakeClient interface{}) *ClusterController {
+	// We accept the fake client directly; callers pass a sigs client.Client.
+	return nil // replaced below
+}
+
+// TestClusterController_RotationSuccess verifies that a rotation annotation
+// causes the catalog to be rotated and the annotation to be cleared.
+func TestClusterController_RotationSuccess(t *testing.T) {
+	trino := newTrinoServer(t)
+
+	cluster := newCluster("test-cluster", "meridian", meridianv1alpha1.ClusterPhaseIdle)
+	cluster.Annotations = map[string]string{
+		credentials.AnnotationRotateCredentials: "kubernetes/mysql_prod/mysql-secret",
+	}
+	cluster.Status.CoordinatorURL = trino.URL
+
+	k8sSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "mysql-secret", Namespace: "meridian"},
+		Data: map[string][]byte{
+			"connector.name":      []byte("mysql"),
+			"connection-url":      []byte("jdbc:mysql://mysql:3306"),
+			"connection-password": []byte("newpass"),
+		},
+	}
+
+	s := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cluster, k8sSecret).
+		WithStatusSubresource(cluster).
+		Build()
+
+	provider := credentials.NewKubernetesProvider(c, "meridian")
+	cache := map[string]*credentials.SecretCache{
+		"kubernetes": credentials.NewSecretCache(provider, credentials.DefaultTTL),
+	}
+
+	r := &ClusterController{
+		Client:    c,
+		Scheme:    s,
+		Providers: map[string]credentials.SecretProvider{"kubernetes": provider},
+		Rotator:   credentials.NewRotator(),
+		Cache:     cache,
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-cluster", Namespace: "meridian"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Annotation must be cleared.
+	updated := &meridianv1alpha1.Cluster{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "test-cluster", Namespace: "meridian"}, updated)
+	if ann := updated.Annotations[credentials.AnnotationRotateCredentials]; ann != "" {
+		t.Errorf("expected annotation to be cleared, got %q", ann)
+	}
+
+	// LastRotatedAt must be set.
+	if updated.Status.LastRotatedAt == nil {
+		t.Error("expected LastRotatedAt to be set after successful rotation")
+	}
+
+	// RotationFailures must be reset.
+	if updated.Status.RotationFailures != 0 {
+		t.Errorf("expected RotationFailures=0 after success, got %d", updated.Status.RotationFailures)
+	}
+
+	// RotatingCatalog must be cleared.
+	if updated.Status.RotatingCatalog != "" {
+		t.Errorf("expected RotatingCatalog to be cleared, got %q", updated.Status.RotatingCatalog)
+	}
+}
+
+// TestClusterController_RotationBackoff verifies that a rotation failure
+// increments RotationFailures and requeues with exponential backoff.
+func TestClusterController_RotationBackoff(t *testing.T) {
+	// No Trino server — rotation will fail with a connection error.
+	cluster := newCluster("test-cluster", "meridian", meridianv1alpha1.ClusterPhaseIdle)
+	cluster.Annotations = map[string]string{
+		credentials.AnnotationRotateCredentials: "kubernetes/mysql_prod/mysql-secret",
+	}
+	cluster.Status.CoordinatorURL = "http://localhost:19999" // nothing listening
+	cluster.Status.RotationFailures = 2                      // already failed twice
+
+	k8sSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "mysql-secret", Namespace: "meridian"},
+		Data: map[string][]byte{
+			"connector.name":      []byte("mysql"),
+			"connection-password": []byte("pass"),
+		},
+	}
+
+	s := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cluster, k8sSecret).
+		WithStatusSubresource(cluster).
+		Build()
+
+	provider := credentials.NewKubernetesProvider(c, "meridian")
+	cache := map[string]*credentials.SecretCache{
+		"kubernetes": credentials.NewSecretCache(provider, credentials.DefaultTTL),
+	}
+
+	r := &ClusterController{
+		Client:    c,
+		Scheme:    s,
+		Providers: map[string]credentials.SecretProvider{"kubernetes": provider},
+		Rotator:   credentials.NewRotator(),
+		Cache:     cache,
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-cluster", Namespace: "meridian"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// RequeueAfter must match BackoffDuration(3) = 20s.
+	expected := credentials.BackoffDuration(3)
+	if result.RequeueAfter != expected {
+		t.Errorf("expected RequeueAfter=%v (failures=3), got %v", expected, result.RequeueAfter)
+	}
+
+	// RotationFailures must be incremented to 3.
+	updated := &meridianv1alpha1.Cluster{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "test-cluster", Namespace: "meridian"}, updated)
+	if updated.Status.RotationFailures != 3 {
+		t.Errorf("expected RotationFailures=3, got %d", updated.Status.RotationFailures)
+	}
+
+	// Annotation must still be present — rotation will retry.
+	if ann := updated.Annotations[credentials.AnnotationRotateCredentials]; ann == "" {
+		t.Error("expected annotation to remain present after failed rotation")
+	}
+}
+
+// TestClusterController_RotationUnknownProvider verifies that an annotation
+// referencing an unconfigured provider clears the annotation without retrying
+// and does not change the cluster Phase.
+func TestClusterController_RotationUnknownProvider(t *testing.T) {
+	cluster := newCluster("test-cluster", "meridian", meridianv1alpha1.ClusterPhaseIdle)
+	cluster.Annotations = map[string]string{
+		// Operator started with kubernetes-only; aws-secrets-manager is unknown.
+		credentials.AnnotationRotateCredentials: "aws-secrets-manager/mysql_prod/arn:aws:secret:us-east-1:123:secret:trino",
+	}
+	cluster.Status.CoordinatorURL = "http://trino:8080"
+
+	s := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cluster).
+		WithStatusSubresource(cluster).
+		Build()
+
+	provider := credentials.NewKubernetesProvider(c, "meridian")
+
+	r := &ClusterController{
+		Client:    c,
+		Scheme:    s,
+		Providers: map[string]credentials.SecretProvider{"kubernetes": provider},
+		Rotator:   credentials.NewRotator(),
+		Cache: map[string]*credentials.SecretCache{
+			"kubernetes": credentials.NewSecretCache(provider, credentials.DefaultTTL),
+		},
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-cluster", Namespace: "meridian"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	updated := &meridianv1alpha1.Cluster{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "test-cluster", Namespace: "meridian"}, updated)
+
+	// Annotation must be cleared — non-retriable error.
+	if ann := updated.Annotations[credentials.AnnotationRotateCredentials]; ann != "" {
+		t.Errorf("expected annotation cleared for unknown provider, got %q", ann)
+	}
+
+	// Cluster Phase must be unchanged — rotation failure ≠ cluster failure.
+	if updated.Status.Phase != meridianv1alpha1.ClusterPhaseIdle {
+		t.Errorf("expected phase Idle (unchanged), got %q", updated.Status.Phase)
 	}
 }

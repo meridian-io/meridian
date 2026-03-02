@@ -63,5 +63,5 @@ First release of Project Meridian — the open-source Trino control plane.
 
 ### Phase 2 — Kubernetes Operator
 - ClusterController — cluster lifecycle: Empty → Pending → Idle → Reserved → Failed
-- ClusterPoolController — warm pool reconciliation (scale up/down, gradual deletion)
+- ClusterPoolController — hot standby pool reconciliation (scale up/down, gradual deletion)
 - ClusterPoolAutoscalerController — utilization-based autoscaling with hysteresis

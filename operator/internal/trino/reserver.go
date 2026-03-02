@@ -13,11 +13,17 @@ import (
 )
 
 const (
-	maxRetries    = 5
-	retryBackoff  = 200 * time.Millisecond
-	poolLabel     = "meridian.io/cluster-pool"
-	profileLabel  = "meridian.io/profile"
+	maxRetries      = 5
+	retryBackoff    = 200 * time.Millisecond
+	poolLabel       = "meridian.io/cluster-pool"
+	profileLabel    = "meridian.io/profile"
+	pollInterval    = 2 * time.Second
+	poolWaitTimeout = 30 * time.Second
 )
+
+// ErrNoIdleClusters is returned when no idle cluster is available in the pool.
+// The REST handler may surface this to the client as a 503 after the wait window.
+var ErrNoIdleClusters = errors.New("no idle clusters available in pool")
 
 // ReservationRequest holds the parameters for reserving a cluster.
 type ReservationRequest struct {
@@ -34,7 +40,7 @@ type ReservationResult struct {
 	ReservedAt     time.Time
 }
 
-// ClusterReserver handles idempotent cluster reservation from the warm pool.
+// ClusterReserver handles idempotent cluster reservation from the hot standby pool.
 type ClusterReserver struct {
 	client client.Client
 }
@@ -45,9 +51,12 @@ func NewClusterReserver(c client.Client) *ClusterReserver {
 
 // Reserve finds a healthy idle cluster and reserves it for the given client.
 // It is idempotent: the same (clientId, reservationId) always returns the same cluster.
-// Uses optimistic concurrency with up to maxRetries attempts.
+//
+// If no idle cluster is immediately available, Reserve polls every 2 seconds
+// for up to poolWaitTimeout (30s) so the caller does not have to implement its
+// own retry loop — the autoscaler will spin up new capacity in parallel.
 func (r *ClusterReserver) Reserve(ctx context.Context, req ReservationRequest) (*ReservationResult, error) {
-	// Check for existing reservation (idempotency).
+	// Check for an existing reservation first (idempotency).
 	existing, err := r.findExistingReservation(ctx, req)
 	if err != nil {
 		return nil, err
@@ -60,20 +69,45 @@ func (r *ClusterReserver) Reserve(ctx context.Context, req ReservationRequest) (
 		}, nil
 	}
 
-	// Retry loop with optimistic concurrency.
+	// Poll until an idle cluster is available or the wait window expires.
+	deadline := time.Now().Add(poolWaitTimeout)
+	for {
+		result, err := r.tryReserve(ctx, req)
+		if err == nil {
+			return result, nil
+		}
+		if !errors.Is(err, ErrNoIdleClusters) {
+			return nil, err
+		}
+
+		if time.Now().After(deadline) {
+			return nil, ErrNoIdleClusters
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+// tryReserve attempts one round of optimistic-concurrency reservation.
+// Returns ErrNoIdleClusters if the pool is empty right now.
+func (r *ClusterReserver) tryReserve(ctx context.Context, req ReservationRequest) (*ReservationResult, error) {
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		cluster, err := r.pickIdleCluster(ctx, req)
 		if err != nil {
 			return nil, err
 		}
 		if cluster == nil {
-			return nil, errors.New("no idle clusters available in pool")
+			return nil, ErrNoIdleClusters
 		}
 
 		result, err := r.patchIfCurrent(ctx, cluster, req)
 		if err != nil {
 			if apierrors.IsConflict(err) {
-				// Another request grabbed this cluster — retry.
+				// Another request claimed this cluster — retry with the next one.
 				time.Sleep(retryBackoff)
 				continue
 			}
@@ -81,7 +115,6 @@ func (r *ClusterReserver) Reserve(ctx context.Context, req ReservationRequest) (
 		}
 		return result, nil
 	}
-
 	return nil, fmt.Errorf("reservation failed after %d attempts: all idle clusters were claimed concurrently", maxRetries)
 }
 
@@ -121,7 +154,7 @@ func (r *ClusterReserver) pickIdleCluster(ctx context.Context, req ReservationRe
 				best = c
 				continue
 			}
-			// Prefer the cluster that became idle earliest (longest-waiting warm cluster).
+			// Prefer the cluster that became idle earliest (longest-waiting standby cluster).
 			if c.Status.IdleAt != nil && best.Status.IdleAt != nil &&
 				c.Status.IdleAt.Before(best.Status.IdleAt) {
 				best = c

@@ -7,13 +7,20 @@ import (
 
 // ClusterPoolSpec defines the desired state of a ClusterPool.
 type ClusterPoolSpec struct {
-	// Replicas is the desired number of warm (idle) clusters in the pool.
+	// Replicas is the desired number of standby (idle) clusters in the pool.
 	// +kubebuilder:default=3
 	// +kubebuilder:validation:Minimum=1
 	Replicas int32 `json:"replicas"`
 
 	// Template defines the profile used when creating new clusters.
 	Template ClusterTemplate `json:"template"`
+
+	// ReservationTTL is the maximum duration a cluster may remain Reserved before
+	// being automatically released back to the pool (e.g. after a client crash).
+	// Accepts Go duration strings: "4h", "30m". Defaults to "4h".
+	// +optional
+	// +kubebuilder:default="4h"
+	ReservationTTL string `json:"reservationTtl,omitempty"`
 }
 
 // ClusterTemplate describes how to create clusters in the pool.
@@ -56,7 +63,7 @@ type ClusterPoolStatus struct {
 // +kubebuilder:printcolumn:name="Pending",type=integer,JSONPath=`.status.pendingReplicas`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ClusterPool manages a warm pool of Trino clusters.
+// ClusterPool manages a hot standby pool of Trino clusters.
 type ClusterPool struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

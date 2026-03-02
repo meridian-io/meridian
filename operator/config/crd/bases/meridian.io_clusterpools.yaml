@@ -33,7 +33,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ClusterPool manages a warm pool of Trino clusters.
+        description: ClusterPool manages a hot standby pool of Trino clusters.
         properties:
           apiVersion:
             description: |-
@@ -57,11 +57,18 @@ spec:
             properties:
               replicas:
                 default: 3
-                description: Replicas is the desired number of warm (idle) clusters
+                description: Replicas is the desired number of standby (idle) clusters
                   in the pool.
                 format: int32
                 minimum: 1
                 type: integer
+              reservationTtl:
+                default: 4h
+                description: ReservationTTL is the maximum duration a cluster may
+                  remain Reserved before being automatically released back to the
+                  pool (e.g. after a client crash). Accepts Go duration strings such
+                  as "4h" or "30m".
+                type: string
               template:
                 description: Template defines the profile used when creating new clusters.
                 properties:

@@ -27,6 +27,9 @@ spec:
     - jsonPath: .status.ready
       name: Ready
       type: boolean
+    - jsonPath: .status.lastRotatedAt
+      name: LastRotated
+      type: date
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -156,6 +159,17 @@ spec:
               reservedAt:
                 description: ReservedAt is when the cluster was last reserved.
                 format: date-time
+                type: string
+              lastRotatedAt:
+                description: LastRotatedAt is when credentials were last successfully rotated.
+                format: date-time
+                type: string
+              rotationFailures:
+                description: RotationFailures is the count of consecutive credential rotation failures.
+                format: int32
+                type: integer
+              rotatingCatalog:
+                description: RotatingCatalog is the catalog name currently being rotated.
                 type: string
             type: object
         type: object

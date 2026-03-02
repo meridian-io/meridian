@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -16,10 +18,65 @@ import (
 
 	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
 	"github.com/meridian-io/meridian/operator/internal/controller"
+	"github.com/meridian-io/meridian/operator/internal/credentials"
 	"github.com/meridian-io/meridian/operator/rest"
 )
 
 var scheme = runtime.NewScheme()
+
+// buildCredentialProvider initialises the configured secret backend and wraps it
+// in a TTL cache. Returns maps keyed by provider name for injection into ClusterController.
+func buildCredentialProvider(
+	ctx context.Context,
+	providerName string,
+	c client.Client,
+	namespace string,
+	vaultAddr, vaultRole, vaultMount string,
+	awsRegion string,
+) (map[string]credentials.SecretProvider, map[string]*credentials.SecretCache, error) {
+	providers := make(map[string]credentials.SecretProvider)
+	caches := make(map[string]*credentials.SecretCache)
+
+	switch providerName {
+	case "kubernetes":
+		p := credentials.NewKubernetesProvider(c, namespace)
+		providers[p.Name()] = p
+		caches[p.Name()] = credentials.NewSecretCache(p, credentials.DefaultTTL)
+
+	case "vault":
+		if vaultAddr == "" {
+			return nil, nil, fmt.Errorf("--vault-addr is required when --credential-provider=vault")
+		}
+		p := credentials.NewVaultProvider(vaultAddr, vaultRole, vaultMount)
+		providers[p.Name()] = p
+		caches[p.Name()] = credentials.NewSecretCache(p, credentials.DefaultTTL)
+
+	case "aws-secrets-manager":
+		if awsRegion == "" {
+			return nil, nil, fmt.Errorf("--aws-region is required when --credential-provider=aws-secrets-manager")
+		}
+		p, err := credentials.NewAWSProvider(ctx, awsRegion)
+		if err != nil {
+			return nil, nil, fmt.Errorf("init AWS Secrets Manager provider: %w", err)
+		}
+		providers[p.Name()] = p
+		caches[p.Name()] = credentials.NewSecretCache(p, credentials.DefaultTTL)
+
+	default:
+		return nil, nil, fmt.Errorf("unknown --credential-provider %q: must be kubernetes, vault, or aws-secrets-manager", providerName)
+	}
+
+	// Always include kubernetes as a fallback so clusters can use either provider.
+	// The annotation determines which one is actually used per rotation request.
+	if providerName != "kubernetes" {
+		p := credentials.NewKubernetesProvider(c, namespace)
+		providers[p.Name()] = p
+		caches[p.Name()] = credentials.NewSecretCache(p, credentials.DefaultTTL)
+	}
+
+	_ = time.Second // ensure time import is used (DefaultTTL is a time.Duration constant)
+	return providers, caches, nil
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -34,6 +91,13 @@ func main() {
 		restAddr    string
 		tlsCert     string
 		tlsKey      string
+
+		// Credential provider flags.
+		credentialProvider string
+		vaultAddr          string
+		vaultRole          string
+		vaultMount         string
+		awsRegion          string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081", "Address for the metrics endpoint.")
@@ -42,6 +106,16 @@ func main() {
 	flag.StringVar(&restAddr, "rest-addr", ":8443", "Address for the reservation REST API (mTLS). Set to empty to disable.")
 	flag.StringVar(&tlsCert, "tls-cert", "", "Path to TLS certificate file for the REST API.")
 	flag.StringVar(&tlsKey, "tls-key", "", "Path to TLS key file for the REST API.")
+	flag.StringVar(&credentialProvider, "credential-provider", "kubernetes",
+		"Secret backend for credential rotation: kubernetes, vault, or aws-secrets-manager.")
+	flag.StringVar(&vaultAddr, "vault-addr", "",
+		"Vault server address (required when --credential-provider=vault).")
+	flag.StringVar(&vaultRole, "vault-role", "meridian-operator",
+		"Vault Kubernetes auth role (used when --credential-provider=vault).")
+	flag.StringVar(&vaultMount, "vault-mount", "secret",
+		"Vault KV v2 mount path (used when --credential-provider=vault).")
+	flag.StringVar(&awsRegion, "aws-region", "",
+		"AWS region (required when --credential-provider=aws-secrets-manager).")
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{})))
@@ -52,7 +126,10 @@ func main() {
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
 		},
-		HealthProbeBindAddress: probeAddr,
+		HealthProbeBindAddress:  probeAddr,
+		LeaderElection:          true,
+		LeaderElectionID:        "meridian-operator-leader.meridian.io",
+		LeaderElectionNamespace: namespace,
 	})
 	if err != nil {
 		log.Error(err, "failed to create manager")
@@ -76,9 +153,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Build credential provider and cache based on --credential-provider flag.
+	providers, caches, err := buildCredentialProvider(ctx, credentialProvider, mgr.GetClient(), namespace,
+		vaultAddr, vaultRole, vaultMount, awsRegion)
+	if err != nil {
+		log.Error(err, "failed to initialise credential provider", "provider", credentialProvider)
+		os.Exit(1)
+	}
+	log.Info("credential provider initialised", "provider", credentialProvider)
+
 	if err = (&controller.ClusterController{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Providers: providers,
+		Rotator:   credentials.NewRotator(),
+		Cache:     caches,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "failed to setup ClusterController")
 		os.Exit(1)

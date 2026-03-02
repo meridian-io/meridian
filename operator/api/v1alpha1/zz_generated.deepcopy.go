@@ -87,6 +87,10 @@ func (in *ClusterStatus) DeepCopyInto(out *ClusterStatus) {
 		in, out := &in.IdleAt, &out.IdleAt
 		*out = (*in).DeepCopy()
 	}
+	if in.LastRotatedAt != nil {
+		in, out := &in.LastRotatedAt, &out.LastRotatedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

@@ -103,13 +103,19 @@ func TestReserver_PicksOldest(t *testing.T) {
 	}
 }
 
-// TestReserver_NoIdleClusters verifies an error is returned when the pool is empty.
+// TestReserver_NoIdleClusters verifies that ErrNoIdleClusters is returned after
+// the wait window expires. Uses a short context deadline so the test runs fast.
 func TestReserver_NoIdleClusters(t *testing.T) {
 	s := newReserverScheme()
 	c := newReserverClient(s)
 
 	reserver := NewClusterReserver(c)
-	_, err := reserver.Reserve(context.Background(), ReservationRequest{
+
+	// Cancel the context after 100ms — well under the 30s pool wait window.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := reserver.Reserve(ctx, ReservationRequest{
 		ClientID:      "client-abc",
 		ReservationID: "res-001",
 		Profile:       "default",

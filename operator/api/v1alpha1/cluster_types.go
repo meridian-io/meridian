@@ -57,6 +57,20 @@ type ClusterStatus struct {
 	// +optional
 	IdleAt *metav1.Time `json:"idleAt,omitempty"`
 
+	// LastRotatedAt is when the most recent successful credential rotation completed.
+	// +optional
+	LastRotatedAt *metav1.Time `json:"lastRotatedAt,omitempty"`
+
+	// RotationFailures is the count of consecutive credential rotation failures.
+	// Used to compute exponential backoff. Reset to 0 on the next success.
+	// +optional
+	RotationFailures int32 `json:"rotationFailures,omitempty"`
+
+	// RotatingCatalog is the catalog currently being rotated, if any.
+	// Cleared after rotation completes (success or non-retriable failure).
+	// +optional
+	RotatingCatalog string `json:"rotatingCatalog,omitempty"`
+
 	// Conditions holds standard Kubernetes conditions.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -68,6 +82,7 @@ type ClusterStatus struct {
 // +kubebuilder:printcolumn:name="Profile",type=string,JSONPath=`.spec.profile`
 // +kubebuilder:printcolumn:name="ClientID",type=string,JSONPath=`.spec.clientId`
 // +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
+// +kubebuilder:printcolumn:name="LastRotated",type=date,JSONPath=`.status.lastRotatedAt`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // Cluster represents a single managed Trino cluster instance.
