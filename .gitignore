@@ -24,6 +24,7 @@ hack/kubeconfig-local.yaml
 
 # Local-only docs
 docs/meridian-overview.html
+docs/training-guide.html
 
 # Binaries in source tree
 mcp/meridian-mcp

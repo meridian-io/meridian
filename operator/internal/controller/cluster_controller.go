@@ -131,8 +131,17 @@ func (r *ClusterController) reconcileIdle(ctx context.Context, cluster *meridian
 	return ctrl.Result{}, nil
 }
 
-// reconcileReserved handles eviction recovery and long-idle garbage collection.
+// reconcileReserved handles release (clientId cleared) and eviction recovery.
 func (r *ClusterController) reconcileReserved(ctx context.Context, cluster *meridianv1alpha1.Cluster) (ctrl.Result, error) {
+	// Reservation cleared — transition back to Idle.
+	if cluster.Spec.ClientID == "" && cluster.Spec.ReservationID == "" {
+		now := metav1.Now()
+		cluster.Status.Phase = meridianv1alpha1.ClusterPhaseIdle
+		cluster.Status.ReservedAt = nil
+		cluster.Status.IdleAt = &now
+		log.FromContext(ctx).Info("cluster released, returning to idle", "cluster", cluster.Name)
+		return ctrl.Result{}, r.Status().Update(ctx, cluster)
+	}
 	return r.ensureCoordinatorRunning(ctx, cluster)
 }
 

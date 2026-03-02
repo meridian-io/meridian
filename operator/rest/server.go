@@ -1,4 +1,4 @@
-package http
+package rest
 
 import (
 	"crypto/tls"
@@ -34,7 +34,6 @@ func (h *ReservationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract clientId from mTLS certificate CN.
 	clientID := extractClientID(r.TLS)
 	if clientID == "" {
 		http.Error(w, "missing client certificate", http.StatusUnauthorized)
@@ -71,7 +70,6 @@ func (h *ReservationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// extractClientID pulls the CommonName from the mTLS client certificate.
 func extractClientID(tlsState *tls.ConnectionState) string {
 	if tlsState == nil || len(tlsState.PeerCertificates) == 0 {
 		return ""
@@ -79,7 +77,7 @@ func extractClientID(tlsState *tls.ConnectionState) string {
 	return tlsState.PeerCertificates[0].Subject.CommonName
 }
 
-// NewServer builds the mTLS HTTP server for the reservation API.
+// NewServer builds the mTLS HTTP server for the reservation REST API.
 func NewServer(addr string, k8sClient client.Client, namespace string) *http.Server {
 	reserver := trino.NewClusterReserver(k8sClient)
 

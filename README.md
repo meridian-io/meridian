@@ -2,6 +2,8 @@
 
 **Open-source Trino control plane for Kubernetes.**
 
+**[meridianctl.com](https://meridianctl.com)**
+
 Meridian keeps a warm pool of pre-warmed Trino clusters that are reserved instantly — no cold start, no provisioning delay. A Kubernetes operator manages the full cluster lifecycle (`Empty → Pending → Idle → Reserved`), a pool controller maintains desired warm capacity, and an autoscaler adjusts replica count based on utilization.
 
 On top of the operator, an **MCP server** exposes 19 management operations as tools for AI agents — so Claude or any MCP client can provision clusters, add catalogs, rotate credentials, and run queries through natural language.
@@ -203,21 +205,61 @@ Empty → Pending → Idle → Reserved
 | `config/` | YAML | CRD manifests |
 | `docs/` | HTML | Architecture and API documentation |
 
-## Install the Operator
+## Kubernetes Operator
+
+The operator manages the full Trino cluster lifecycle on Kubernetes. Three controllers run in a single binary:
+
+| Controller | Responsibility |
+|---|---|
+| `ClusterController` | Lifecycle per cluster: `Empty → Pending → Idle → Reserved → Failed`. Creates coordinator Deployment, worker Deployment, and coordinator Service. Health-gates transition to Idle. Handles coordinator eviction recovery. |
+| `ClusterPoolController` | Maintains warm pool: creates clusters to reach `spec.replicas`, deletes oldest idle cluster when over-provisioned (one per cycle), purges failed clusters immediately. |
+| `ClusterPoolAutoscalerController` | Adjusts `ClusterPool.spec.replicas` based on utilization (`reserved / total`). Scales up at ≥ threshold (default 70%), scales down at < threshold × 0.75 (hysteresis). |
+
+### Build and Run Locally
+
+```bash
+# Build
+cd operator && go build -o ../bin/meridian-operator .
+
+# Apply CRDs
+kubectl apply -f operator/config/crd/bases/
+
+# Run (reads ~/.kube/config by default)
+./bin/meridian-operator --namespace meridian
+
+# With REST API enabled
+./bin/meridian-operator --namespace meridian \
+  --rest-addr :8443 \
+  --tls-cert /path/to/cert.pem \
+  --tls-key /path/to/key.pem
+```
+
+### Run Tests
+
+```bash
+cd operator && go test ./internal/...
+```
+
+### Reserve a Cluster (REST API)
+
+```bash
+curl -X POST https://meridian:8443/api/v1/clusters/reservations \
+  --cert client.crt --key client.key \
+  -H "Content-Type: application/json" \
+  -d '{"reservationId": "job-123", "profile": "default"}'
+```
+
+Returns:
+```json
+{"clusterName": "pool-abc123", "coordinatorUrl": "http://pool-abc123-coordinator.meridian.svc.cluster.local:8080", "reservedAt": "2026-03-01T10:00:00Z"}
+```
+
+### Install via Helm (Phase 6)
 
 ```bash
 helm install meridian charts/meridian \
   --namespace meridian \
   --create-namespace
-```
-
-## Reserve a Cluster (REST API)
-
-```bash
-curl -X POST https://meridian/api/v1/clusters/reservations \
-  --cert client.crt --key client.key \
-  -H "Content-Type: application/json" \
-  -d '{"reservationId": "job-123", "profile": "standard-trino"}'
 ```
 
 ## Local Development & E2E Testing
@@ -369,6 +411,47 @@ The following test cases cover all working tools end-to-end. Run them in Claude 
 
 ---
 
+### Phase 2 — Operator Manual Tests
+
+Prerequisites: kind cluster running, CRDs applied, operator running locally.
+
+```bash
+kubectl apply -f operator/config/crd/bases/
+./bin/meridian-operator --namespace meridian --kubeconfig ~/.kube/config
+```
+
+#### Cluster Lifecycle (Empty → Pending → Idle → Reserved → Idle)
+
+| # | Action | Expected result |
+|---|---|---|
+| 18 | `kubectl apply -f operator/config/samples/test-cluster.yaml` | Cluster `test-cluster` created with phase `""` (Empty) |
+| 19 | `kubectl get cluster test-cluster -n meridian -w` | Phase transitions: `""` → `Pending` within seconds as operator creates Deployments and Service |
+| 20 | `kubectl get deployments -n meridian` | `test-cluster-coordinator` (1 replica) and `test-cluster-worker` (2 replicas) exist |
+| 21 | `kubectl get svc -n meridian` | `test-cluster-coordinator` Service exists on port 8080 |
+| 22 | Wait for coordinator pod to be Ready, then watch cluster | Phase transitions `Pending` → `Idle`, `ready: true`, `idleAt` timestamp set |
+| 23 | `kubectl patch cluster test-cluster -n meridian --type=merge -p '{"spec":{"clientId":"client-abc","reservationId":"res-001"}}'` | Cluster transitions `Idle` → `Reserved`, `reservedAt` timestamp set |
+| 24 | `kubectl get cluster test-cluster -n meridian -o jsonpath='{.status.phase}'` | Returns `Reserved` |
+| 25 | `kubectl patch cluster test-cluster -n meridian --type=merge -p '{"spec":{"clientId":"","reservationId":""}}'` | Cluster transitions `Reserved` → `Idle`, `idleAt` refreshed |
+
+#### Warm Pool (ClusterPool)
+
+| # | Action | Expected result |
+|---|---|---|
+| 26 | `kubectl apply -f operator/config/samples/test-clusterpool.yaml` | ClusterPool `test-pool` created with `spec.replicas: 2` |
+| 27 | `kubectl get clusters -n meridian -l meridian.io/cluster-pool=test-pool -w` | 2 clusters created automatically (`test-pool-<suffix>`), each transitioning Empty → Pending → Idle |
+| 28 | `kubectl patch clusterpool test-pool -n meridian --type=merge -p '{"spec":{"replicas":1}}'` | After next reconcile (≤30s), oldest idle cluster deleted — 1 cluster remains |
+| 29 | `kubectl patch clusterpool test-pool -n meridian --type=merge -p '{"spec":{"replicas":3}}'` | 2 new clusters created to reach desired count of 3 |
+| 30 | `kubectl get clusterpool test-pool -n meridian -o jsonpath='{.status}'` | Shows `readyReplicas`, `pendingReplicas`, `reservedReplicas` counts |
+
+#### Cleanup
+
+| # | Action | Expected result |
+|---|---|---|
+| 31 | `kubectl delete clusterpool test-pool -n meridian` | Owner references cascade — all pool clusters deleted automatically |
+| 32 | `kubectl delete cluster test-cluster -n meridian` | Coordinator Deployment, worker Deployment, and Service deleted via owner references |
+
+---
+
 ## CRDs
 
 ```yaml
@@ -378,18 +461,69 @@ ClusterPool          — warm pool of N clusters
 ClusterPoolAutoscaler — scale pool by reservation utilization
 ```
 
+## Beyond AI Agents
+
+The MCP server is a standard RPC interface — any system that automates Trino cluster lifecycle can use it, not just LLMs.
+
+### CI/CD Pipelines
+
+Reserve a fresh cluster for integration tests, run them, release when done:
+
+```yaml
+# GitHub Actions
+- name: Reserve test cluster
+  run: |
+    RESULT=$(mcp-client call reserve_cluster \
+      --profile ci --reservation-id ${{ github.run_id }})
+    echo "COORDINATOR_URL=$(echo $RESULT | jq -r .coordinatorUrl)" >> $GITHUB_ENV
+
+- name: Run integration tests
+  run: ./test.sh $COORDINATOR_URL
+
+- name: Release cluster
+  if: always()
+  run: mcp-client call release_cluster --cluster-name ${{ env.CLUSTER_NAME }}
+```
+
+### Workflow Orchestrators
+
+Manage cluster lifecycle as part of an Airflow / Dagster / Prefect DAG:
+
+```python
+@task
+def reserve_trino_cluster(dag_run):
+    return mcp.call("reserve_cluster", profile="batch", reservation_id=dag_run.run_id)
+
+@task
+def run_transformation(cluster):
+    run_dbt(target=cluster["coordinatorUrl"])
+
+@task
+def release_trino_cluster(cluster):
+    mcp.call("release_cluster", cluster_name=cluster["clusterName"])
+```
+
+### Other MCP Clients
+
+| Client | Use case |
+|---|---|
+| Slack / PagerDuty bot | On-call engineer scales pool via button click |
+| Backstage plugin | App developers provision clusters via form, no kubectl access |
+| Terraform / Pulumi provider | Declare cluster pools as infrastructure-as-code |
+
 ## Why Meridian
 
 - **No open-source Trino control plane exists** — Trino issue [#396](https://github.com/trinodb/trino/issues/396) open since 2019
 - **AI agents can query Trino but can't manage it** — Meridian's MCP server fills this gap; no other tool does
+- **Works as a universal operations interface** — CI/CD, orchestrators, internal tooling, and AI agents all use the same binary
 
 ## Roadmap
 
 | Phase | Status | Description |
 |---|---|---|
 | **Phase 1 — MCP Server** | ✅ Complete | 19 MCP tools, Go binary, stdio + SSE transport, local dev setup, TTL query result cache (5min for schema metadata, opt-in for queries, singleflight deduplication, auto-invalidation on catalog changes), query tagging (`mcp_query_id` for audit correlation), CSV file export for large result sets, query execution plan via `explain_query` |
-| **Phase 2 — Kubernetes Operator** | 🔧 In Progress | ClusterController, ClusterPoolController, ClusterPoolAutoscalerController |
-| **Phase 3 — REST API** | 📋 Planned | `POST /api/v1/clusters/reservations` with mTLS, ClusterReserver with optimistic concurrency |
+| **Phase 2 — Kubernetes Operator** | ✅ Complete | ClusterController (Empty→Pending→Idle→Reserved→Idle), ClusterPoolController (warm pool, gradual scale-down, oldest-first selection), ClusterPoolAutoscalerController (utilization-based with hysteresis), REST reservation API (mTLS, idempotent, optimistic concurrency), 14 unit tests |
+| **Phase 3 — REST API** | ✅ Complete | `POST /api/v1/clusters/reservations` with mTLS, clientId from cert CN, ClusterReserver with optimistic concurrency and 5-retry loop |
 | **Phase 4 — Catalog & Credential Layer** | 📋 Planned | Vault / AWS Secrets Manager integration, secret rotation without cluster restart |
 | **Phase 5 — Web UI** | 📋 Planned | Next.js dashboard — cluster pool visualization, catalog management UI, audit trail viewer |
 | **Phase 6 — Helm Chart & Docs** | 📋 Planned | One-command install, quickstart guide, full architecture documentation |
