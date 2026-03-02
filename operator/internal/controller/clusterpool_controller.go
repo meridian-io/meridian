@@ -52,7 +52,7 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Categorise clusters by phase.
-	var idle, reserved, pending, failed []meridianv1alpha1.Cluster
+	var idle, reserved, pending, failed, degraded []meridianv1alpha1.Cluster
 	for _, c := range clusters.Items {
 		switch c.Status.Phase {
 		case meridianv1alpha1.ClusterPhaseIdle:
@@ -63,6 +63,8 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 			pending = append(pending, c)
 		case meridianv1alpha1.ClusterPhaseFailed:
 			failed = append(failed, c)
+		case meridianv1alpha1.ClusterPhaseDegraded:
+			degraded = append(degraded, c)
 		}
 	}
 
@@ -70,6 +72,14 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 	//    already broken and must be replaced by the pool).
 	for _, c := range failed {
 		log.Info("deleting failed cluster", "cluster", c.Name)
+		if err := r.Delete(ctx, &c); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// 1b. Delete ALL degraded clusters immediately — pool creates replacements.
+	for _, c := range degraded {
+		log.Info("deleting degraded cluster", "cluster", c.Name)
 		if err := r.Delete(ctx, &c); err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
@@ -112,6 +122,27 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
+	// 3.5. Age recycling — delete ONE idle cluster older than maxClusterAge per cycle.
+	//      Pool creates a replacement in step 4. Skipped if a rolling upgrade already
+	//      performed a deletion this cycle (gradual operations — one delete per cycle).
+	if !rollingUpgrade && pool.Spec.MaxClusterAge != "" {
+		if maxAge, err := time.ParseDuration(pool.Spec.MaxClusterAge); err == nil {
+			for _, c := range idle {
+				if time.Since(c.CreationTimestamp.Time) > maxAge {
+					log.Info("age recycling: replacing aged-out cluster",
+						"cluster", c.Name,
+						"age", time.Since(c.CreationTimestamp.Time).Round(time.Second))
+					if err := r.Delete(ctx, &c); err != nil && !apierrors.IsNotFound(err) {
+						return ctrl.Result{}, err
+					}
+					total--
+					rollingUpgrade = true // prevent double-delete in scale-down step
+					break
+				}
+			}
+		}
+	}
+
 	// 4. Scale up — create at most ONE cluster per reconcile (gradual operations).
 	//    This prevents thundering-herd on the Kubernetes scheduler and keeps
 	//    logs readable (one operation = one clear failure point).
@@ -132,10 +163,11 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// 6. Update pool status.
-	pool.Status.ReadyReplicas = int32(len(idle))
+	pool.Status.ReadyReplicas    = int32(len(idle))
 	pool.Status.ReservedReplicas = int32(len(reserved))
-	pool.Status.PendingReplicas = int32(len(pending))
-	pool.Status.FailedReplicas = int32(len(failed))
+	pool.Status.PendingReplicas  = int32(len(pending))
+	pool.Status.FailedReplicas   = int32(len(failed))
+	pool.Status.DegradedReplicas = int32(len(degraded))
 	if err := r.Status().Update(ctx, pool); err != nil {
 		return ctrl.Result{}, err
 	}

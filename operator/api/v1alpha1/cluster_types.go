@@ -12,8 +12,9 @@ const (
 	ClusterPhaseEmpty    ClusterPhase = ""
 	ClusterPhasePending  ClusterPhase = "Pending"
 	ClusterPhaseIdle     ClusterPhase = "Idle"
-	ClusterPhaseReserved ClusterPhase = "Reserved"
-	ClusterPhaseFailed   ClusterPhase = "Failed"
+	ClusterPhaseReserved  ClusterPhase = "Reserved"
+	ClusterPhaseFailed    ClusterPhase = "Failed"
+	ClusterPhaseDegraded  ClusterPhase = "Degraded"
 )
 
 // ClusterSpec defines the desired state of a Cluster.
