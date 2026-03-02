@@ -1,16 +1,17 @@
 version: 2
 
-project_name: meridian-mcp
+project_name: meridian
 
 before:
   hooks:
     - bash -c "cd mcp && go mod tidy"
+    - bash -c "cd operator && go mod tidy"
 
 builds:
-  - id: meridian-mcp
+  - id: trino-mcp-server
     main: ./cmd/meridian-mcp
     dir: mcp
-    binary: meridian-mcp
+    binary: meridian
     ldflags:
       - -s -w -X main.version={{.Version}}
     env:
@@ -23,42 +24,97 @@ builds:
       - amd64
       - arm64
 
+  - id: trino-operator
+    main: .
+    dir: operator
+    binary: meridian-operator
+    ldflags:
+      - -s -w
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
 archives:
-  - id: meridian-mcp
-    builds: [meridian-mcp]
-    name_template: "meridian-mcp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: trino-mcp-server
+    builds: [trino-mcp-server]
+    name_template: "trino-mcp-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
         format: zip
+
+  - id: trino-operator
+    builds: [trino-operator]
+    name_template: "trino-operator_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: "checksums.txt"
 
 dockers:
-  - image_templates:
-      - "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}-amd64"
+  - id: trino-mcp-server-amd64
+    ids: [trino-mcp-server]
+    image_templates:
+      - "ghcr.io/meridian-io/trino-mcp-server:{{ .Tag }}-amd64"
     dockerfile: mcp/Dockerfile
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=trino-mcp-server"
+      - "--label=org.opencontainers.image.description=MCP server for Trino cluster management"
       - "--label=org.opencontainers.image.version={{ .Version }}"
       - "--label=org.opencontainers.image.source=https://github.com/meridian-io/meridian"
-  - image_templates:
-      - "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}-arm64"
+
+  - id: trino-mcp-server-arm64
+    ids: [trino-mcp-server]
+    image_templates:
+      - "ghcr.io/meridian-io/trino-mcp-server:{{ .Tag }}-arm64"
     dockerfile: mcp/Dockerfile
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
 
+  - id: trino-operator-amd64
+    ids: [trino-operator]
+    image_templates:
+      - "ghcr.io/meridian-io/trino-operator:{{ .Tag }}-amd64"
+    dockerfile: operator/Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=trino-operator"
+      - "--label=org.opencontainers.image.description=Kubernetes operator for Trino cluster lifecycle management"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/meridian-io/meridian"
+
+  - id: trino-operator-arm64
+    ids: [trino-operator]
+    image_templates:
+      - "ghcr.io/meridian-io/trino-operator:{{ .Tag }}-arm64"
+    dockerfile: operator/Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+
 docker_manifests:
-  - name_template: "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}"
+  - name_template: "ghcr.io/meridian-io/trino-mcp-server:{{ .Tag }}"
     image_templates:
-      - "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}-amd64"
-      - "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}-arm64"
-  - name_template: "ghcr.io/meridian-io/meridian-mcp:latest"
+      - "ghcr.io/meridian-io/trino-mcp-server:{{ .Tag }}-amd64"
+      - "ghcr.io/meridian-io/trino-mcp-server:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/meridian-io/trino-mcp-server:latest"
     image_templates:
-      - "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}-amd64"
-      - "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}-arm64"
+      - "ghcr.io/meridian-io/trino-mcp-server:{{ .Tag }}-amd64"
+      - "ghcr.io/meridian-io/trino-mcp-server:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/meridian-io/trino-operator:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/meridian-io/trino-operator:{{ .Tag }}-amd64"
+      - "ghcr.io/meridian-io/trino-operator:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/meridian-io/trino-operator:latest"
+    image_templates:
+      - "ghcr.io/meridian-io/trino-operator:{{ .Tag }}-amd64"
+      - "ghcr.io/meridian-io/trino-operator:{{ .Tag }}-arm64"
 
 changelog:
   sort: asc

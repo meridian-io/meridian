@@ -1,5 +1,5 @@
 BINARY      := meridian-operator
-MCP_BINARY  := meridian-mcp
+MCP_BINARY  := meridian
 IMG         := ghcr.io/project-meridian/operator:latest
 MCP_IMG     := ghcr.io/project-meridian/meridian-mcp:latest
 GOPATH      := $(shell go env GOPATH 2>/dev/null)

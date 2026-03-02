@@ -1,8 +1,8 @@
 # Project Meridian
 
-**Open-source Trino control plane for Kubernetes.**
+**The open-source Kubernetes-native control plane and MCP server for Trino.**
 
-**[meridianctl.com](https://meridianctl.com)**
+**[meridianctl.com](https://meridianctl.com)** · **v1.0**
 
 Meridian keeps a hot standby pool of pre-provisioned Trino clusters that are reserved instantly — no cold start, no provisioning delay. A Kubernetes operator manages the full cluster lifecycle (`Empty → Pending → Idle → Reserved`), a pool controller maintains desired standby capacity, and an autoscaler adjusts replica count based on utilization.
 
@@ -14,38 +14,33 @@ The MCP server works against **any Trino deployment on Kubernetes today** — no
 
 ## MCP Server — Start Here
 
-The `meridian-mcp` binary is a standalone MCP server that works against **any Trino deployment on Kubernetes**. Install the operator for the full hot standby pool experience; the MCP server is useful on day one without it.
+The `meridian` binary is a standalone MCP server that works against **any Trino deployment on Kubernetes**. Install the operator for the full hot standby pool experience; the MCP server is useful on day one without it.
 
 ### Install
-
-**Homebrew (macOS/Linux):**
-```bash
-brew install meridian-io/tap/meridian-mcp
-```
 
 **Binary (all platforms):**
 ```bash
 # macOS arm64
-curl -Lo meridian-mcp https://github.com/meridian-io/meridian/releases/latest/download/meridian-mcp_latest_darwin_arm64.tar.gz
-tar xzf meridian-mcp_*.tar.gz && sudo mv meridian-mcp /usr/local/bin/
+curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.0/trino-mcp-server_v1.0_darwin_arm64.tar.gz
+tar xzf meridian.tar.gz && sudo mv meridian /usr/local/bin/
 ```
 
 **Docker:**
 ```bash
-docker pull ghcr.io/meridian-io/meridian-mcp:latest
+docker pull ghcr.io/meridian-io/trino-mcp-server:v1.0
 ```
 
 ### Run
 
 ```bash
 # stdio — for Claude Desktop / local MCP clients
-meridian-mcp --transport stdio --namespace meridian
+meridian --transport stdio --namespace meridian
 
 # SSE — for remote / team use (Cursor, Claude API)
-meridian-mcp --transport sse --addr :8080 --namespace meridian
+meridian --transport sse --addr :8080 --namespace meridian
 
 # In-cluster (reads service account token automatically)
-meridian-mcp --transport sse --addr :8080
+meridian --transport sse --addr :8080
 ```
 
 ### Connect to Claude Desktop
@@ -56,7 +51,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "meridian": {
-      "command": "meridian-mcp",
+      "command": "meridian",
       "args": ["--transport", "stdio", "--namespace", "meridian"]
     }
   }
@@ -215,6 +210,16 @@ The operator manages the full Trino cluster lifecycle on Kubernetes. Three contr
 | `ClusterPoolController` | Maintains hot standby pool: creates clusters to reach `spec.replicas`, deletes oldest idle cluster when over-provisioned (one per cycle), purges failed clusters immediately. |
 | `ClusterPoolAutoscalerController` | Adjusts `ClusterPool.spec.replicas` based on utilization (`reserved / total`). Scales up at ≥ threshold (default 70%), scales down at < threshold × 0.75 (hysteresis). |
 
+### Docker Images
+
+```bash
+# MCP server — for Claude Desktop, CI/CD, AI agents
+docker pull ghcr.io/meridian-io/trino-mcp-server:v1.0
+
+# Kubernetes operator — control plane
+docker pull ghcr.io/meridian-io/trino-operator:v1.0
+```
+
 ### Build and Run Locally
 
 ```bash
@@ -308,10 +313,10 @@ This creates a kind cluster named `meridian-dev`, applies the Meridian CRDs, see
 ### 3. Build and Run the MCP Server
 
 ```bash
-cd mcp && go build -o ../bin/meridian-mcp ./cmd/meridian-mcp/
+cd mcp && go build -o ../bin/meridian ./cmd/meridian-mcp/
 
 # Run locally
-../bin/meridian-mcp --transport stdio \
+../bin/meridian --transport stdio \
   --namespace meridian \
   --kubeconfig ~/.kube/config
 ```
@@ -324,7 +329,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 {
   "mcpServers": {
     "meridian": {
-      "command": "/path/to/meridian-mcp",
+      "command": "/path/to/meridian",
       "args": ["--transport", "stdio", "--namespace", "meridian", "--kubeconfig", "/Users/you/.kube/config"]
     }
   }
@@ -364,10 +369,10 @@ docker exec meridian-trino trino --execute "SHOW SCHEMAS FROM mysql_testdb"
 
 ```bash
 # MCP server
-cd mcp && go build -o ../bin/meridian-mcp ./cmd/meridian-mcp
+cd mcp && go build -o ../bin/meridian ./cmd/meridian-mcp
 
 # Kubernetes operator
-cd operator && go build -o ../bin/meridian-operator ./...
+cd operator && go build -o ../bin/meridian-operator .
 
 # Or use Make
 make build       # operator
@@ -513,8 +518,8 @@ def release_trino_cluster(cluster):
 
 ## Why Meridian
 
-- **No open-source Trino control plane exists** — Trino issue [#396](https://github.com/trinodb/trino/issues/396) open since 2019
-- **AI agents can query Trino but can't manage it** — Meridian's MCP server fills this gap; no other tool does
+- **No open-source Trino control plane exists** — [trinodb/trino #396](https://github.com/trinodb/trino/issues/396) open since 2019; Meridian is the answer
+- **No official Trino MCP server exists** — [trinodb/trino #26239](https://github.com/trinodb/trino/issues/26239) open; Meridian ships 19 management tools, not just query execution
 - **Works as a universal operations interface** — CI/CD, orchestrators, internal tooling, and AI agents all use the same binary
 
 ## Roadmap
@@ -524,7 +529,7 @@ def release_trino_cluster(cluster):
 | **Phase 1 — MCP Server** | ✅ Complete | 19 MCP tools, Go binary, stdio + SSE transport, local dev setup, TTL query result cache (5min for schema metadata, opt-in for queries, singleflight deduplication, auto-invalidation on catalog changes), query tagging (`mcp_query_id` for audit correlation), CSV file export for large result sets, query execution plan via `explain_query` |
 | **Phase 2 — Kubernetes Operator** | ✅ Complete | ClusterController (Empty→Pending→Idle→Reserved→Idle), ClusterPoolController (hot standby pool, gradual scale-down, oldest-first selection), ClusterPoolAutoscalerController (utilization-based with hysteresis), REST reservation API (mTLS, idempotent, optimistic concurrency), 14 unit tests |
 | **Phase 3 — REST API** | ✅ Complete | `POST /api/v1/clusters/reservations` with mTLS, clientId from cert CN, ClusterReserver with optimistic concurrency and 5-retry loop |
-| **Phase 4 — Catalog & Credential Layer** | 📋 Planned | Vault / AWS Secrets Manager integration, secret rotation without cluster restart |
+| **Phase 4 — Catalog & Credential Layer** | ✅ Complete | Annotation-driven credential rotation without cluster restart. Supports Kubernetes Secrets, HashiCorp Vault (K8s auth, KV v2), and AWS Secrets Manager (IRSA). TTL cache with proactive refresh, exponential backoff, and `CredentialRotation` condition on the Cluster object. |
 | **Phase 5 — Web UI** | 📋 Planned | Next.js dashboard — cluster pool visualization, catalog management UI, audit trail viewer |
 | **Phase 6 — Helm Chart & Docs** | 📋 Planned | One-command install, quickstart guide, full architecture documentation |
 
