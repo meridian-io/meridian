@@ -18,6 +18,7 @@ import (
 
 	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
 	"github.com/meridian-io/meridian/operator/internal/credentials"
+	"github.com/meridian-io/meridian/operator/internal/gateway"
 )
 
 const (
@@ -28,6 +29,9 @@ const (
 	// pendingTimeout is the maximum time a cluster may remain Pending before
 	// being marked Failed (covers CrashLoopBackOff, OOMKilled, node full, etc.).
 	pendingTimeout = 10 * time.Minute
+
+	gatewayEndpointAnnotation     = "meridian.io/gateway-endpoint"
+	gatewayRoutingGroupAnnotation = "meridian.io/gateway-routing-group"
 )
 
 // ClusterController manages the lifecycle of individual Trino clusters.
@@ -157,6 +161,16 @@ func (r *ClusterController) reconcileHealthCheck(ctx context.Context, cluster *m
 	}
 
 	log.Info("cluster is now idle", "cluster", cluster.Name)
+
+	if endpoint := cluster.Annotations[gatewayEndpointAnnotation]; endpoint != "" {
+		rg := cluster.Annotations[gatewayRoutingGroupAnnotation]
+		if err := gateway.Register(ctx, endpoint, cluster.Name, cluster.Status.CoordinatorURL, rg); err != nil {
+			log.Error(err, "failed to register with Trino Gateway — cluster is still Idle", "cluster", cluster.Name)
+		} else {
+			log.Info("registered cluster with Trino Gateway", "cluster", cluster.Name, "routingGroup", rg)
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -231,6 +245,15 @@ func (r *ClusterController) reconcileDelete(ctx context.Context, cluster *meridi
 			"cluster", cluster.Name,
 			"clientId", cluster.Spec.ClientID)
 	}
+
+	if endpoint := cluster.Annotations[gatewayEndpointAnnotation]; endpoint != "" {
+		if err := gateway.Deregister(ctx, endpoint, cluster.Name); err != nil {
+			log.Error(err, "failed to deregister from Trino Gateway — proceeding with deletion", "cluster", cluster.Name)
+		} else {
+			log.Info("deregistered cluster from Trino Gateway", "cluster", cluster.Name)
+		}
+	}
+
 	controllerutil.RemoveFinalizer(cluster, clusterFinalizer)
 	return ctrl.Result{}, r.Update(ctx, cluster)
 }

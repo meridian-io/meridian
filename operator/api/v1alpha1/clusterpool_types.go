@@ -26,6 +26,22 @@ type ClusterPoolSpec struct {
 	// Use as a routing key in reservations: reserve_cluster(workload="analytics").
 	// +optional
 	Workload string `json:"workload,omitempty"`
+
+	// Gateway configures optional Trino Gateway integration. When set, clusters are
+	// automatically registered on Idle and deregistered on deletion.
+	// +optional
+	Gateway *GatewayConfig `json:"gateway,omitempty"`
+}
+
+// GatewayConfig configures Trino Gateway integration for a ClusterPool.
+type GatewayConfig struct {
+	// Endpoint is the Trino Gateway base URL (e.g. "http://trino-gateway:8080").
+	Endpoint string `json:"endpoint"`
+
+	// RoutingGroup is the routing group clusters are registered under.
+	// Defaults to the pool workload value, or "adhoc" if workload is also unset.
+	// +optional
+	RoutingGroup string `json:"routingGroup,omitempty"`
 }
 
 // ClusterTemplate describes how to create clusters in the pool.

@@ -115,7 +115,7 @@ func (in *ClusterPool) DeepCopyInto(out *ClusterPool) {
 	*out = *in
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = in.Spec
+	in.Spec.DeepCopyInto(&out.Spec)
 	in.Status.DeepCopyInto(&out.Status)
 }
 
@@ -167,6 +167,24 @@ func (in *ClusterPoolList) DeepCopyObject() runtime.Object {
 func (in *ClusterPoolSpec) DeepCopyInto(out *ClusterPoolSpec) {
 	*out = *in
 	out.Template = in.Template
+	if in.Gateway != nil {
+		in, out := &in.Gateway, &out.Gateway
+		*out = new(GatewayConfig)
+		**out = **in
+	}
+}
+
+func (in *GatewayConfig) DeepCopyInto(out *GatewayConfig) {
+	*out = *in
+}
+
+func (in *GatewayConfig) DeepCopy() *GatewayConfig {
+	if in == nil {
+		return nil
+	}
+	out := new(GatewayConfig)
+	in.DeepCopyInto(out)
+	return out
 }
 
 func (in *ClusterPoolSpec) DeepCopy() *ClusterPoolSpec {
