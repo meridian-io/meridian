@@ -1,0 +1,80 @@
+# Test fixtures for local QE testing.
+# Apply with: kubectl apply -f config/samples/test-clusters.yaml
+# Then patch status with: hack/patch-status.sh
+
+---
+apiVersion: meridian.io/v1alpha1
+kind: Cluster
+metadata:
+  name: trino-idle-01
+  namespace: meridian
+  labels:
+    meridian.io/cluster-pool: standard-pool
+    meridian.io/profile: standard-trino
+spec:
+  image: trinodb/trino:435
+  workers: 2
+---
+apiVersion: meridian.io/v1alpha1
+kind: Cluster
+metadata:
+  name: trino-idle-02
+  namespace: meridian
+  labels:
+    meridian.io/cluster-pool: standard-pool
+    meridian.io/profile: standard-trino
+spec:
+  image: trinodb/trino:435
+  workers: 2
+---
+apiVersion: meridian.io/v1alpha1
+kind: Cluster
+metadata:
+  name: trino-reserved-01
+  namespace: meridian
+  labels:
+    meridian.io/cluster-pool: standard-pool
+    meridian.io/profile: standard-trino
+    meridian.io/client-id: analytics-team
+    meridian.io/reservation-id: res-abc-123
+spec:
+  image: trinodb/trino:435
+  workers: 4
+  clientId: analytics-team
+  reservationId: res-abc-123
+---
+apiVersion: meridian.io/v1alpha1
+kind: Cluster
+metadata:
+  name: trino-pending-01
+  namespace: meridian
+  labels:
+    meridian.io/cluster-pool: standard-pool
+    meridian.io/profile: standard-trino
+spec:
+  image: trinodb/trino:435
+  workers: 2
+---
+apiVersion: meridian.io/v1alpha1
+kind: ClusterPool
+metadata:
+  name: standard-pool
+  namespace: meridian
+spec:
+  replicas: 5
+  template:
+    profile: standard-trino
+    image: trinodb/trino:435
+    workers: 2
+---
+apiVersion: meridian.io/v1alpha1
+kind: ClusterPool
+metadata:
+  name: large-pool
+  namespace: meridian
+spec:
+  replicas: 3
+  template:
+    profile: large-trino
+    image: trinodb/trino:435
+    workers: 8

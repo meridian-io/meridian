@@ -1,0 +1,52 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusterpools.meridian.io
+spec:
+  group: meridian.io
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [replicas]
+              properties:
+                replicas:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                template:
+                  type: object
+                  properties:
+                    profile:
+                      type: string
+                    image:
+                      type: string
+                    workers:
+                      type: integer
+                      format: int64
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                readyReplicas:
+                  type: integer
+                  format: int64
+                reservedReplicas:
+                  type: integer
+                  format: int64
+  scope: Namespaced
+  names:
+    plural: clusterpools
+    singular: clusterpool
+    kind: ClusterPool
+    shortNames:
+      - mcp

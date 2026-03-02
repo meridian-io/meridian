@@ -1,0 +1,29 @@
+# Binaries
+bin/
+*.exe
+*.test
+
+# Go
+vendor/
+*.sum.bak
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Local dev
+hack/trino/etc/catalog/*.properties
+!hack/trino/etc/catalog/tpch.properties
+hack/claude-desktop-config.json
+hack/kubeconfig-local.yaml
+*.log
+
+# macOS
+.DS_Store
+
+# Local-only docs
+docs/meridian-overview.html
+
+# Binaries in source tree
+mcp/meridian-mcp

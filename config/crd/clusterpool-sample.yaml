@@ -1,0 +1,23 @@
+apiVersion: meridian.io/v1alpha1
+kind: ClusterPool
+metadata:
+  name: standard-pool
+  namespace: meridian
+spec:
+  replicas: 5
+  template:
+    profile: standard-trino
+    image: trinodb/trino:latest
+    workers: 2
+---
+apiVersion: meridian.io/v1alpha1
+kind: ClusterPoolAutoscaler
+metadata:
+  name: standard-pool-autoscaler
+  namespace: meridian
+spec:
+  targetRef:
+    name: standard-pool
+  minReplicas: 2
+  maxReplicas: 20
+  utilizationThreshold: "0.70"
