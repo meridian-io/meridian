@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"net/http"
 	"os"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -9,9 +10,10 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	meridianv1alpha1 "github.com/project-meridian/meridian/api/v1alpha1"
-	"github.com/project-meridian/meridian/internal/controller"
+	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
+	"github.com/meridian-io/meridian/operator/internal/controller"
 )
 
 var scheme = runtime.NewScheme()
@@ -37,8 +39,10 @@ func main() {
 	log := ctrl.Log.WithName("main")
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		MetricsBindAddress:     metricsAddr,
+		Scheme: scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: metricsAddr,
+		},
 		HealthProbeBindAddress: probeAddr,
 	})
 	if err != nil {

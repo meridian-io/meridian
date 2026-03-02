@@ -1,12 +1,12 @@
 # Project Meridian
 
-> The Trino control plane
+**Open-source Trino control plane for Kubernetes.**
 
-Meridian is an **MCP server for Trino** — it lets AI agents manage Trino clusters and catalogs on Kubernetes through natural language. Instead of SSH-ing into nodes, editing config files, and restarting clusters, you describe what you want and the agent does it.
+Meridian keeps a warm pool of pre-warmed Trino clusters that are reserved instantly — no cold start, no provisioning delay. A Kubernetes operator manages the full cluster lifecycle (`Empty → Pending → Idle → Reserved`), a pool controller maintains desired warm capacity, and an autoscaler adjusts replica count based on utilization.
 
-Ask Claude to add a new MySQL or PostgreSQL catalog to a live Trino cluster and it's available in seconds — **no restart required**. Ask it to provision a new cluster, scale a pool, rotate credentials, or run a SQL query and get results back. Meridian exposes 19 management operations as MCP tools, covering the full lifecycle of Trino on Kubernetes.
+On top of the operator, an **MCP server** exposes 19 management operations as tools for AI agents — so Claude or any MCP client can provision clusters, add catalogs, rotate credentials, and run queries through natural language.
 
-Works against any Trino deployment on Kubernetes today. Install the Meridian operator to unlock warm pool management and instant cluster reservation.
+The MCP server works against **any Trino deployment on Kubernetes today** — no operator required. Install the operator to unlock warm pool management and instant reservation.
 
 ---
 

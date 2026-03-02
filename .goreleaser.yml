@@ -4,7 +4,7 @@ project_name: meridian-mcp
 
 before:
   hooks:
-    - go mod tidy
+    - bash -c "cd mcp && go mod tidy"
 
 builds:
   - id: meridian-mcp
@@ -36,29 +36,29 @@ checksum:
 
 dockers:
   - image_templates:
-      - "ghcr.io/project-meridian/meridian-mcp:{{ .Tag }}-amd64"
+      - "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}-amd64"
     dockerfile: mcp/Dockerfile
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source=https://github.com/project-meridian/meridian"
+      - "--label=org.opencontainers.image.source=https://github.com/meridian-io/meridian"
   - image_templates:
-      - "ghcr.io/project-meridian/meridian-mcp:{{ .Tag }}-arm64"
+      - "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}-arm64"
     dockerfile: mcp/Dockerfile
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
 
 docker_manifests:
-  - name_template: "ghcr.io/project-meridian/meridian-mcp:{{ .Tag }}"
+  - name_template: "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}"
     image_templates:
-      - "ghcr.io/project-meridian/meridian-mcp:{{ .Tag }}-amd64"
-      - "ghcr.io/project-meridian/meridian-mcp:{{ .Tag }}-arm64"
-  - name_template: "ghcr.io/project-meridian/meridian-mcp:latest"
+      - "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}-amd64"
+      - "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/meridian-io/meridian-mcp:latest"
     image_templates:
-      - "ghcr.io/project-meridian/meridian-mcp:{{ .Tag }}-amd64"
-      - "ghcr.io/project-meridian/meridian-mcp:{{ .Tag }}-arm64"
+      - "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}-amd64"
+      - "ghcr.io/meridian-io/meridian-mcp:{{ .Tag }}-arm64"
 
 changelog:
   sort: asc

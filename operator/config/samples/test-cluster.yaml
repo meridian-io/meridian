@@ -1,0 +1,9 @@
+apiVersion: meridian.io/v1alpha1
+kind: Cluster
+metadata:
+  name: test-cluster
+  namespace: meridian
+spec:
+  profile: default
+  image: trinodb/trino:435
+  workers: 2

@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	meridianv1alpha1 "github.com/project-meridian/meridian/api/v1alpha1"
+	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
 )
 
 // ClusterController manages the lifecycle of individual Trino clusters.
@@ -42,7 +42,7 @@ func (r *ClusterController) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	switch cluster.Status.Phase {
-	case meridianv1alpha1.ClusterPhaseEmpty, "":
+	case meridianv1alpha1.ClusterPhaseEmpty:
 		return r.reconcilePending(ctx, cluster)
 	case meridianv1alpha1.ClusterPhasePending:
 		return r.reconcileHealthCheck(ctx, cluster)

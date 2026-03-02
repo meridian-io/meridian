@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	meridianv1alpha1 "github.com/project-meridian/meridian/api/v1alpha1"
+	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
 )
 
 const (
@@ -56,7 +56,7 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 			idle = append(idle, c)
 		case meridianv1alpha1.ClusterPhaseReserved:
 			reserved = append(reserved, c)
-		case meridianv1alpha1.ClusterPhasePending, meridianv1alpha1.ClusterPhaseEmpty, "":
+		case meridianv1alpha1.ClusterPhasePending, meridianv1alpha1.ClusterPhaseEmpty:
 			pending = append(pending, c)
 		case meridianv1alpha1.ClusterPhaseFailed:
 			failed = append(failed, c)

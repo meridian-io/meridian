@@ -7,7 +7,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/project-meridian/meridian/internal/trino"
+	"github.com/meridian-io/meridian/operator/internal/trino"
 )
 
 // ReservationHandler handles POST /api/v1/clusters/reservations.

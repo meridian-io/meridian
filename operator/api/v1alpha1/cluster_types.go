@@ -1,3 +1,4 @@
+// +groupName=meridian.io
 package v1alpha1
 
 import (

@@ -9,7 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	meridianv1alpha1 "github.com/project-meridian/meridian/api/v1alpha1"
+	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
 )
 
 const (

@@ -1,0 +1,11 @@
+apiVersion: meridian.io/v1alpha1
+kind: ClusterPool
+metadata:
+  name: test-pool
+  namespace: meridian
+spec:
+  replicas: 2
+  template:
+    profile: default
+    image: trinodb/trino:435
+    workers: 2
