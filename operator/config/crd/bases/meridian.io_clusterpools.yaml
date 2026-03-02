@@ -94,6 +94,18 @@ spec:
               workload:
                 description: Workload tags all clusters in this pool with a workload type (e.g. "analytics", "etl"). Used to route reservations without specifying a cluster name or profile.
                 type: string
+              gateway:
+                description: Gateway configures optional Trino Gateway integration. Clusters are automatically registered on Idle and deregistered on deletion.
+                properties:
+                  endpoint:
+                    description: Endpoint is the Trino Gateway base URL (e.g. "http://trino-gateway:8080").
+                    type: string
+                  routingGroup:
+                    description: RoutingGroup is the routing group for registered backends. Defaults to the pool workload, or "adhoc".
+                    type: string
+                required:
+                - endpoint
+                type: object
             required:
             - replicas
             - template
