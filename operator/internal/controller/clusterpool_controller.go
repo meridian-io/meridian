@@ -18,6 +18,7 @@ import (
 const (
 	reconcileInterval      = 30 * time.Second
 	poolLabel              = "meridian.io/cluster-pool"
+	workloadLabel          = "meridian.io/workload"
 	maxDeletesPerReconcile = 1 // gradual operations — one delete per cycle
 	defaultReservationTTL  = 4 * time.Hour
 )
@@ -178,14 +179,19 @@ func (r *ClusterPoolController) listPoolClusters(ctx context.Context, pool *meri
 
 func (r *ClusterPoolController) createCluster(ctx context.Context, pool *meridianv1alpha1.ClusterPool) error {
 	name := fmt.Sprintf("%s-%s", pool.Name, generateSuffix())
+	labels := map[string]string{
+		poolLabel:             pool.Name,
+		"meridian.io/profile": pool.Spec.Template.Profile,
+	}
+	if pool.Spec.Workload != "" {
+		labels[workloadLabel] = pool.Spec.Workload
+	}
+
 	cluster := &meridianv1alpha1.Cluster{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: pool.Namespace,
-			Labels: map[string]string{
-				poolLabel:            pool.Name,
-				"meridian.io/profile": pool.Spec.Template.Profile,
-			},
+			Labels:    labels,
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(pool, meridianv1alpha1.GroupVersion.WithKind("ClusterPool")),
 			},
