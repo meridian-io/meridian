@@ -23,8 +23,7 @@ hack/kubeconfig-local.yaml
 .DS_Store
 
 # Local-only docs
-docs/meridian-overview.html
-docs/training-guide.html
+docs/
 
 # Binaries in source tree
 mcp/meridian-mcp

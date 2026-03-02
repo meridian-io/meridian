@@ -9,7 +9,7 @@ import (
 // New builds and returns the configured MCP server with all Meridian tools registered.
 func New(c *k8s.Client, version string) *server.MCPServer {
 	s := server.NewMCPServer(
-		"meridian-mcp",
+		"meridian",
 		version,
 		server.WithToolCapabilities(true),
 	)

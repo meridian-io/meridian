@@ -30,7 +30,7 @@ func main() {
 	flag.Parse()
 
 	if showVer {
-		fmt.Printf("meridian-mcp %s\n", version)
+		fmt.Printf("meridian %s\n", version)
 		os.Exit(0)
 	}
 
@@ -43,13 +43,13 @@ func main() {
 
 	switch transport {
 	case "stdio":
-		log.Printf("meridian-mcp %s starting (stdio, namespace=%s, meridian-operator=%v)",
+		log.Printf("meridian %s starting (stdio, namespace=%s, meridian-operator=%v)",
 			version, namespace, k8sClient.HasMeridianOperator())
 		if err := server.ServeStdio(s); err != nil {
 			log.Fatalf("server error: %v", err)
 		}
 	case "sse":
-		log.Printf("meridian-mcp %s starting (sse %s, namespace=%s, meridian-operator=%v)",
+		log.Printf("meridian %s starting (sse %s, namespace=%s, meridian-operator=%v)",
 			version, addr, namespace, k8sClient.HasMeridianOperator())
 		sseServer := server.NewSSEServer(s, server.WithBaseURL("http://localhost"+addr))
 		if err := sseServer.Start(addr); err != nil {
