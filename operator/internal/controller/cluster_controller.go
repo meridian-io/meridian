@@ -95,6 +95,8 @@ func (r *ClusterController) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	case meridianv1alpha1.ClusterPhaseFailed:
 		log.Info("cluster in failed state, skipping", "cluster", cluster.Name)
 		return ctrl.Result{}, nil
+	case meridianv1alpha1.ClusterPhaseDegraded:
+		return r.reconcileDegraded(ctx, cluster)
 	}
 
 	return ctrl.Result{}, nil
@@ -174,7 +176,8 @@ func (r *ClusterController) reconcileHealthCheck(ctx context.Context, cluster *m
 	return ctrl.Result{}, nil
 }
 
-// reconcileIdle watches for a reservation patch (clientId + reservationId set).
+// reconcileIdle watches for a reservation patch (clientId + reservationId set) and
+// periodically checks coordinator health to detect pod crashes while idle.
 func (r *ClusterController) reconcileIdle(ctx context.Context, cluster *meridianv1alpha1.Cluster) (ctrl.Result, error) {
 	if cluster.Spec.ClientID != "" && cluster.Spec.ReservationID != "" {
 		now := metav1.Now()
@@ -188,8 +191,49 @@ func (r *ClusterController) reconcileIdle(ctx context.Context, cluster *meridian
 			"clientId", cluster.Spec.ClientID,
 			"reservationId", cluster.Spec.ReservationID,
 		)
+		return ctrl.Result{}, nil
 	}
-	return ctrl.Result{}, nil
+
+	// Periodic health check: detect coordinator crashes while Idle.
+	healthy, err := r.isClusterHealthy(ctx, cluster)
+	if err != nil {
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	if !healthy {
+		log.FromContext(ctx).Info("coordinator unhealthy while idle, transitioning to Degraded", "cluster", cluster.Name)
+		cluster.Status.Phase = meridianv1alpha1.ClusterPhaseDegraded
+		cluster.Status.Ready = false
+		return ctrl.Result{}, r.Status().Update(ctx, cluster)
+	}
+
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// reconcileDegraded attempts light recovery of a degraded cluster.
+// The pool controller deletes Degraded clusters and creates replacements;
+// this handler self-heals if the coordinator recovers on its own.
+func (r *ClusterController) reconcileDegraded(ctx context.Context, cluster *meridianv1alpha1.Cluster) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+
+	// Re-create coordinator deployment if it was deleted.
+	if err := r.ensureCoordinatorDeployment(ctx, cluster); err != nil {
+		log.Error(err, "failed to re-create coordinator deployment", "cluster", cluster.Name)
+	}
+
+	healthy, err := r.isClusterHealthy(ctx, cluster)
+	if err != nil {
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	}
+	if healthy {
+		now := metav1.Now()
+		cluster.Status.Phase = meridianv1alpha1.ClusterPhaseIdle
+		cluster.Status.Ready = true
+		cluster.Status.IdleAt = &now
+		log.Info("cluster recovered from Degraded, returning to Idle", "cluster", cluster.Name)
+		return ctrl.Result{}, r.Status().Update(ctx, cluster)
+	}
+
+	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 }
 
 // reconcileReserved handles release (clientId cleared) and eviction recovery.
