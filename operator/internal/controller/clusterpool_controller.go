@@ -187,11 +187,25 @@ func (r *ClusterPoolController) createCluster(ctx context.Context, pool *meridia
 		labels[workloadLabel] = pool.Spec.Workload
 	}
 
+	annotations := map[string]string{}
+	if pool.Spec.Gateway != nil && pool.Spec.Gateway.Endpoint != "" {
+		annotations[gatewayEndpointAnnotation] = pool.Spec.Gateway.Endpoint
+		rg := pool.Spec.Gateway.RoutingGroup
+		if rg == "" {
+			rg = pool.Spec.Workload
+		}
+		if rg == "" {
+			rg = "adhoc"
+		}
+		annotations[gatewayRoutingGroupAnnotation] = rg
+	}
+
 	cluster := &meridianv1alpha1.Cluster{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: pool.Namespace,
-			Labels:    labels,
+			Name:        name,
+			Namespace:   pool.Namespace,
+			Labels:      labels,
+			Annotations: annotations,
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(pool, meridianv1alpha1.GroupVersion.WithKind("ClusterPool")),
 			},
