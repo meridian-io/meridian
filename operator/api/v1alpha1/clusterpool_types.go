@@ -27,6 +27,11 @@ type ClusterPoolSpec struct {
 	// +optional
 	Workload string `json:"workload,omitempty"`
 
+	// MaxClusterAge is the maximum age of an idle cluster before it is recycled and replaced.
+	// Accepts Go duration strings: "24h", "12h". If unset, no age-based recycling occurs.
+	// +optional
+	MaxClusterAge string `json:"maxClusterAge,omitempty"`
+
 	// Gateway configures optional Trino Gateway integration. When set, clusters are
 	// automatically registered on Idle and deregistered on deletion.
 	// +optional
@@ -70,6 +75,9 @@ type ClusterPoolStatus struct {
 
 	// FailedReplicas is the number of clusters in Failed phase.
 	FailedReplicas int32 `json:"failedReplicas,omitempty"`
+
+	// DegradedReplicas is the number of clusters currently in Degraded phase.
+	DegradedReplicas int32 `json:"degradedReplicas,omitempty"`
 
 	// Conditions holds standard Kubernetes conditions.
 	// +optional

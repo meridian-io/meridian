@@ -106,6 +106,9 @@ spec:
                 required:
                 - endpoint
                 type: object
+              maxClusterAge:
+                description: MaxClusterAge is the maximum age of an idle cluster before it is recycled and replaced. Accepts Go duration strings such as "24h" or "12h". If unset, no age-based recycling occurs.
+                type: string
             required:
             - replicas
             - template
@@ -170,6 +173,10 @@ spec:
                   - type
                   type: object
                 type: array
+              degradedReplicas:
+                description: DegradedReplicas is the number of clusters currently in Degraded phase.
+                format: int32
+                type: integer
               failedReplicas:
                 description: FailedReplicas is the number of clusters in Failed phase.
                 format: int32
