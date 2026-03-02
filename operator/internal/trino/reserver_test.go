@@ -37,15 +37,21 @@ func newReserverClient(s *runtime.Scheme, objs ...client.Object) client.Client {
 }
 
 func idleCluster(name, namespace, profile string, idleAt time.Time) *meridianv1alpha1.Cluster {
+	return idleClusterWithWorkload(name, namespace, profile, "", idleAt)
+}
+
+func idleClusterWithWorkload(name, namespace, profile, workload string, idleAt time.Time) *meridianv1alpha1.Cluster {
 	t := metav1.NewTime(idleAt)
+	labels := map[string]string{profileLabel: profile}
+	if workload != "" {
+		labels[workloadLabel] = workload
+	}
 	return &meridianv1alpha1.Cluster{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            name,
 			Namespace:       namespace,
 			ResourceVersion: "1",
-			Labels: map[string]string{
-				profileLabel: profile,
-			},
+			Labels:          labels,
 		},
 		Spec: meridianv1alpha1.ClusterSpec{Profile: profile},
 		Status: meridianv1alpha1.ClusterStatus{
@@ -123,6 +129,79 @@ func TestReserver_NoIdleClusters(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when no idle clusters available")
+	}
+}
+
+// TestReserver_WorkloadMatch verifies that a reservation with a workload filter only
+// selects clusters labeled with that workload.
+func TestReserver_WorkloadMatch(t *testing.T) {
+	analytics := idleClusterWithWorkload("analytics-01", "meridian", "default", "analytics", time.Now().Add(-5*time.Minute))
+	etl := idleClusterWithWorkload("etl-01", "meridian", "default", "etl", time.Now().Add(-10*time.Minute))
+	s := newReserverScheme()
+	c := newReserverClient(s, analytics, etl)
+
+	reserver := NewClusterReserver(c)
+	result, err := reserver.Reserve(context.Background(), ReservationRequest{
+		ClientID:      "client-abc",
+		ReservationID: "res-001",
+		Profile:       "default",
+		Workload:      "analytics",
+		Namespace:     "meridian",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.ClusterName != "analytics-01" {
+		t.Errorf("expected analytics-01, got %q", result.ClusterName)
+	}
+}
+
+// TestReserver_WorkloadNoMatch verifies that no cluster is returned when no cluster
+// has the requested workload label.
+func TestReserver_WorkloadNoMatch(t *testing.T) {
+	etl := idleClusterWithWorkload("etl-01", "meridian", "default", "etl", time.Now().Add(-5*time.Minute))
+	s := newReserverScheme()
+	c := newReserverClient(s, etl)
+
+	reserver := NewClusterReserver(c)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := reserver.Reserve(ctx, ReservationRequest{
+		ClientID:      "client-abc",
+		ReservationID: "res-001",
+		Profile:       "default",
+		Workload:      "analytics",
+		Namespace:     "meridian",
+	})
+	if err == nil {
+		t.Fatal("expected error when no cluster matches the workload")
+	}
+}
+
+// TestReserver_WorkloadEmpty verifies backward compatibility: an empty workload
+// falls back to profile-only selection and considers all matching clusters.
+func TestReserver_WorkloadEmpty(t *testing.T) {
+	c1 := idleClusterWithWorkload("pool-01", "meridian", "default", "analytics", time.Now().Add(-5*time.Minute))
+	c2 := idleClusterWithWorkload("pool-02", "meridian", "default", "etl", time.Now().Add(-3*time.Minute))
+	s := newReserverScheme()
+	fc := newReserverClient(s, c1, c2)
+
+	reserver := NewClusterReserver(fc)
+	result, err := reserver.Reserve(context.Background(), ReservationRequest{
+		ClientID:      "client-abc",
+		ReservationID: "res-001",
+		Profile:       "default",
+		Workload:      "",
+		Namespace:     "meridian",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Oldest by idleAt should win regardless of workload label.
+	if result.ClusterName != "pool-01" {
+		t.Errorf("expected oldest cluster pool-01, got %q", result.ClusterName)
 	}
 }
 

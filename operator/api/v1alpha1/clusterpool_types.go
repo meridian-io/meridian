@@ -21,6 +21,11 @@ type ClusterPoolSpec struct {
 	// +optional
 	// +kubebuilder:default="4h"
 	ReservationTTL string `json:"reservationTtl,omitempty"`
+
+	// Workload tags all clusters in this pool with a workload type (e.g. "analytics", "etl").
+	// Use as a routing key in reservations: reserve_cluster(workload="analytics").
+	// +optional
+	Workload string `json:"workload,omitempty"`
 }
 
 // ClusterTemplate describes how to create clusters in the pool.
@@ -61,6 +66,7 @@ type ClusterPoolStatus struct {
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="Reserved",type=integer,JSONPath=`.status.reservedReplicas`
 // +kubebuilder:printcolumn:name="Pending",type=integer,JSONPath=`.status.pendingReplicas`
+// +kubebuilder:printcolumn:name="Workload",type=string,JSONPath=`.spec.workload`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ClusterPool manages a hot standby pool of Trino clusters.

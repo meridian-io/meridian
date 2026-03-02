@@ -89,6 +89,7 @@ func ListPoolsHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequest) 
 			Namespace       string `json:"namespace"`
 			DesiredReplicas int64  `json:"desiredReplicas"`
 			Profile         string `json:"profile,omitempty"`
+			Workload        string `json:"workload,omitempty"`
 		}
 
 		summaries := make([]poolSummary, 0, len(pools))
@@ -105,6 +106,7 @@ func ListPoolsHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequest) 
 				if tmpl != nil {
 					ps.Profile, _ = tmpl["profile"].(string)
 				}
+				ps.Workload, _ = spec["workload"].(string)
 			}
 			summaries = append(summaries, ps)
 		}
