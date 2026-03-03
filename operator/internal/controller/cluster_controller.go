@@ -28,7 +28,8 @@ const (
 
 	// pendingTimeout is the maximum time a cluster may remain Pending before
 	// being marked Failed (covers CrashLoopBackOff, OOMKilled, node full, etc.).
-	pendingTimeout = 10 * time.Minute
+	// 15 min accommodates Trino's 2–4 min startup time plus image pull.
+	pendingTimeout = 15 * time.Minute
 
 	gatewayEndpointAnnotation     = "meridian.io/gateway-endpoint"
 	gatewayRoutingGroupAnnotation = "meridian.io/gateway-routing-group"
@@ -106,6 +107,10 @@ func (r *ClusterController) Reconcile(ctx context.Context, req ctrl.Request) (ct
 func (r *ClusterController) reconcilePending(ctx context.Context, cluster *meridianv1alpha1.Cluster) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 	log.Info("creating resources for cluster", "cluster", cluster.Name)
+
+	if err := r.ensureClusterConfigMap(ctx, cluster); err != nil {
+		return r.setFailed(ctx, cluster, fmt.Sprintf("failed to create config: %v", err))
+	}
 
 	if err := r.ensureCoordinatorDeployment(ctx, cluster); err != nil {
 		return r.setFailed(ctx, cluster, fmt.Sprintf("failed to create coordinator: %v", err))
@@ -310,6 +315,7 @@ func (r *ClusterController) setFailed(ctx context.Context, cluster *meridianv1al
 }
 
 // ensureCoordinatorDeployment creates the Trino coordinator Deployment if it doesn't exist.
+// Config files are injected via an init container that copies from the cluster ConfigMap.
 func (r *ClusterController) ensureCoordinatorDeployment(ctx context.Context, cluster *meridianv1alpha1.Cluster) error {
 	name := fmt.Sprintf("%s-coordinator", cluster.Name)
 	dep := &appsv1.Deployment{}
@@ -337,14 +343,44 @@ func (r *ClusterController) ensureCoordinatorDeployment(ctx context.Context, clu
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: clusterLabels(cluster)},
 				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{{
+						Name:  "init-config",
+						Image: "busybox:1.36",
+						Command: []string{"sh", "-c",
+							"cp /etc/trino-static/coordinator.config.properties /etc/trino/config.properties && " +
+								"cp /etc/trino-static/jvm.config /etc/trino/jvm.config && " +
+								"cp /etc/trino-static/log.properties /etc/trino/log.properties && " +
+								"printf 'node.environment=production\\nnode.data-dir=/data/trino\\nnode.id=%s\\n' $(hostname) > /etc/trino/node.properties",
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "configmap-vol", MountPath: "/etc/trino-static", ReadOnly: true},
+							{Name: "trino-etc", MountPath: "/etc/trino"},
+						},
+					}},
 					Containers: []corev1.Container{{
 						Name:  "trino-coordinator",
 						Image: cluster.Spec.Image,
 						Ports: []corev1.ContainerPort{{ContainerPort: 8080}},
-						Env: []corev1.EnvVar{
-							{Name: "TRINO_NODE_TYPE", Value: "coordinator"},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "trino-etc", MountPath: "/etc/trino"},
 						},
 					}},
+					Volumes: []corev1.Volume{
+						{
+							Name: "configmap-vol",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: fmt.Sprintf("%s-config", cluster.Name),
+									},
+								},
+							},
+						},
+						{
+							Name:         "trino-etc",
+							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+						},
+					},
 				},
 			},
 		},
@@ -353,6 +389,7 @@ func (r *ClusterController) ensureCoordinatorDeployment(ctx context.Context, clu
 }
 
 // ensureWorkerDeployment creates the Trino worker Deployment if it doesn't exist.
+// Config files are injected via an init container that copies from the cluster ConfigMap.
 func (r *ClusterController) ensureWorkerDeployment(ctx context.Context, cluster *meridianv1alpha1.Cluster) error {
 	name := fmt.Sprintf("%s-worker", cluster.Name)
 	dep := &appsv1.Deployment{}
@@ -384,13 +421,43 @@ func (r *ClusterController) ensureWorkerDeployment(ctx context.Context, cluster 
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: clusterLabels(cluster)},
 				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{{
+						Name:  "init-config",
+						Image: "busybox:1.36",
+						Command: []string{"sh", "-c",
+							"cp /etc/trino-static/worker.config.properties /etc/trino/config.properties && " +
+								"cp /etc/trino-static/jvm.config /etc/trino/jvm.config && " +
+								"cp /etc/trino-static/log.properties /etc/trino/log.properties && " +
+								"printf 'node.environment=production\\nnode.data-dir=/data/trino\\nnode.id=%s\\n' $(hostname) > /etc/trino/node.properties",
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "configmap-vol", MountPath: "/etc/trino-static", ReadOnly: true},
+							{Name: "trino-etc", MountPath: "/etc/trino"},
+						},
+					}},
 					Containers: []corev1.Container{{
 						Name:  "trino-worker",
 						Image: cluster.Spec.Image,
-						Env: []corev1.EnvVar{
-							{Name: "TRINO_NODE_TYPE", Value: "worker"},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "trino-etc", MountPath: "/etc/trino"},
 						},
 					}},
+					Volumes: []corev1.Volume{
+						{
+							Name: "configmap-vol",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: fmt.Sprintf("%s-config", cluster.Name),
+									},
+								},
+							},
+						},
+						{
+							Name:         "trino-etc",
+							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+						},
+					},
 				},
 			},
 		},
@@ -428,6 +495,40 @@ func (r *ClusterController) ensureService(ctx context.Context, cluster *meridian
 		},
 	}
 	return r.Create(ctx, svc)
+}
+
+// ensureClusterConfigMap creates a ConfigMap with Trino configuration files for the cluster.
+// The ConfigMap is owned by the Cluster and deleted automatically with it.
+func (r *ClusterController) ensureClusterConfigMap(ctx context.Context, cluster *meridianv1alpha1.Cluster) error {
+	name := fmt.Sprintf("%s-config", cluster.Name)
+	cm := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, cm)
+	if err == nil {
+		return nil // already exists
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+
+	p := lookupProfile(ctx, r.Client, cluster.Namespace, cluster.Spec.Profile)
+
+	cm = &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: cluster.Namespace,
+			Labels:    clusterLabels(cluster),
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(cluster, meridianv1alpha1.GroupVersion.WithKind("Cluster")),
+			},
+		},
+		Data: map[string]string{
+			"coordinator.config.properties": coordinatorConfigProperties(cluster.Name, cluster.Namespace, p),
+			"worker.config.properties":      workerConfigProperties(cluster.Name, cluster.Namespace, p),
+			"jvm.config":                    jvmConfig(p),
+			"log.properties":                logProperties,
+		},
+	}
+	return r.Create(ctx, cm)
 }
 
 // ── Credential rotation ───────────────────────────────────────────────────────
