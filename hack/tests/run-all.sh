@@ -77,10 +77,10 @@ start_operator() {
 
   info "Starting operator..."
   "$binary" \
-    --tls-cert-file "$TLS_DIR/server.crt" \
-    --tls-key-file  "$TLS_DIR/server.key" \
-    --tls-ca-file   "$TLS_DIR/ca.crt" \
-    --namespace     "$NS" \
+    -tls-cert "$TLS_DIR/server.crt" \
+    -tls-key  "$TLS_DIR/server.key" \
+    -tls-ca   "$TLS_DIR/ca.crt" \
+    -namespace "$NS" \
     &>/tmp/meridian-operator.log &
   OPERATOR_PID=$!
 
