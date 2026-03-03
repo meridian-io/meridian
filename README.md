@@ -2,7 +2,7 @@
 
 **The open-source Trino control plane and MCP server for Kubernetes.**
 
-**[getmeridian.dev](https://getmeridian.dev)** · **v1.0**
+**[getmeridian.dev](https://getmeridian.dev)** · **v1.1**
 
 Trino clusters take 30–90 seconds to provision. Meridian eliminates that wait — a hot standby pool keeps pre-provisioned clusters idle and ready, reserved in zero seconds. No cold starts for CI/CD jobs, batch workloads, or multi-tenant platforms.
 
@@ -21,13 +21,13 @@ The `meridian` binary is a standalone MCP server that works against **any Trino 
 **Binary (all platforms):**
 ```bash
 # macOS arm64
-curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.0/trino-mcp-server_v1.0_darwin_arm64.tar.gz
+curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.1/trino-mcp-server_v1.1_darwin_arm64.tar.gz
 tar xzf meridian.tar.gz && sudo mv meridian /usr/local/bin/
 ```
 
 **Docker:**
 ```bash
-docker pull ghcr.io/meridian-io/trino-mcp-server:v1.0
+docker pull ghcr.io/meridian-io/trino-mcp-server:v1.1
 ```
 
 ### Run
@@ -214,10 +214,10 @@ The operator manages the full Trino cluster lifecycle on Kubernetes. Three contr
 
 ```bash
 # MCP server — for Claude Desktop, CI/CD, AI agents
-docker pull ghcr.io/meridian-io/trino-mcp-server:v1.0
+docker pull ghcr.io/meridian-io/trino-mcp-server:v1.1
 
 # Kubernetes operator — control plane
-docker pull ghcr.io/meridian-io/trino-operator:v1.0
+docker pull ghcr.io/meridian-io/trino-operator:v1.1
 ```
 
 ### Build and Run Locally
@@ -527,11 +527,12 @@ def release_trino_cluster(cluster):
 | Phase | Status | Description |
 |---|---|---|
 | **Phase 1 — MCP Server** | ✅ Complete | 19 MCP tools, Go binary, stdio + SSE transport, local dev setup, TTL query result cache (5min for schema metadata, opt-in for queries, singleflight deduplication, auto-invalidation on catalog changes), query tagging (`mcp_query_id` for audit correlation), CSV file export for large result sets, query execution plan via `explain_query` |
-| **Phase 2 — Kubernetes Operator** | ✅ Complete | ClusterController (Empty→Pending→Idle→Reserved→Idle), ClusterPoolController (hot standby pool, gradual scale-down, oldest-first selection), ClusterPoolAutoscalerController (utilization-based with hysteresis), REST reservation API (mTLS, idempotent, optimistic concurrency), 14 unit tests |
-| **Phase 3 — REST API** | ✅ Complete | `POST /api/v1/clusters/reservations` with mTLS, clientId from cert CN, ClusterReserver with optimistic concurrency and 5-retry loop |
+| **Phase 2 — Kubernetes Operator** | ✅ Complete | ClusterController (Empty→Pending→Idle→Reserved→Idle→Degraded), ClusterPoolController (hot standby pool, gradual scale-down, oldest-first selection, age recycling via `maxClusterAge`, rolling image upgrades), ClusterPoolAutoscalerController (utilization-based with hysteresis), Trino Gateway integration, workload-labeled pools |
+| **Phase 3 — REST API** | ✅ Complete | Full REST surface: reserve, release, list clusters (phase/profile/workload filters), get cluster, list pools, scale pool — all with mTLS and cross-client ownership validation |
 | **Phase 4 — Catalog & Credential Layer** | ✅ Complete | Annotation-driven credential rotation without cluster restart. Supports Kubernetes Secrets, HashiCorp Vault (K8s auth, KV v2), and AWS Secrets Manager (IRSA). TTL cache with proactive refresh, exponential backoff, and `CredentialRotation` condition on the Cluster object. |
-| **Phase 5 — Web UI** | 📋 Planned | Next.js dashboard — cluster pool visualization, catalog management UI, audit trail viewer |
-| **Phase 6 — Helm Chart & Docs** | 📋 Planned | One-command install, quickstart guide, full architecture documentation |
+| **Phase 5 — Profile System** | 🔨 In Progress | ClusterPool profile templates — inject Trino `config.properties`, `jvm.config`, and catalog definitions into coordinator and worker pods at provision time |
+| **Phase 6 — Web UI** | 📋 Planned | Next.js dashboard — cluster pool visualization, catalog management UI, audit trail viewer |
+| **Phase 7 — Helm Chart & Docs** | 📋 Planned | One-command install, quickstart guide, full architecture documentation |
 
 ---
 
