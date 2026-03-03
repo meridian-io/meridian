@@ -2,8 +2,10 @@ package rest
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"net/http"
+	"os"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -332,7 +334,10 @@ func extractClientID(tlsState *tls.ConnectionState) string {
 }
 
 // NewServer builds the mTLS HTTP server for the Meridian REST API.
-func NewServer(addr string, k8sClient client.Client, namespace string) *http.Server {
+// caFile is optional: when provided, only clients presenting a certificate
+// signed by that CA are accepted (mTLS). When empty, client cert verification
+// is skipped (useful for local dev without a PKI).
+func NewServer(addr string, k8sClient client.Client, namespace string, caFile string) *http.Server {
 	reserver := trino.NewClusterReserver(k8sClient)
 
 	mux := http.NewServeMux()
@@ -365,12 +370,21 @@ func NewServer(addr string, k8sClient client.Client, namespace string) *http.Ser
 		w.WriteHeader(http.StatusOK)
 	})
 
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
+	if caFile != "" {
+		caPEM, err := os.ReadFile(caFile)
+		if err == nil {
+			pool := x509.NewCertPool()
+			if pool.AppendCertsFromPEM(caPEM) {
+				tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+				tlsCfg.ClientCAs = pool
+			}
+		}
+	}
+
 	return &http.Server{
-		Addr:    addr,
-		Handler: mux,
-		TLSConfig: &tls.Config{
-			ClientAuth: tls.RequireAndVerifyClientCert,
-			MinVersion: tls.VersionTLS13,
-		},
+		Addr:      addr,
+		Handler:   mux,
+		TLSConfig: tlsCfg,
 	}
 }

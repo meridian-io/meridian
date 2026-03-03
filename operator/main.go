@@ -91,6 +91,7 @@ func main() {
 		restAddr    string
 		tlsCert     string
 		tlsKey      string
+		tlsCA       string
 
 		// Credential provider flags.
 		credentialProvider string
@@ -106,6 +107,7 @@ func main() {
 	flag.StringVar(&restAddr, "rest-addr", ":8443", "Address for the reservation REST API (mTLS). Set to empty to disable.")
 	flag.StringVar(&tlsCert, "tls-cert", "", "Path to TLS certificate file for the REST API.")
 	flag.StringVar(&tlsKey, "tls-key", "", "Path to TLS key file for the REST API.")
+	flag.StringVar(&tlsCA, "tls-ca", "", "Path to CA certificate for verifying client certs (mTLS).")
 	flag.StringVar(&credentialProvider, "credential-provider", "kubernetes",
 		"Secret backend for credential rotation: kubernetes, vault, or aws-secrets-manager.")
 	flag.StringVar(&vaultAddr, "vault-addr", "",
@@ -196,7 +198,7 @@ func main() {
 
 	// Start the mTLS reservation REST API if configured.
 	if restAddr != "" && tlsCert != "" && tlsKey != "" {
-		srv := rest.NewServer(restAddr, mgr.GetClient(), namespace)
+		srv := rest.NewServer(restAddr, mgr.GetClient(), namespace, tlsCA)
 		go func() {
 			log.Info("starting REST API", "addr", restAddr)
 			if err := srv.ListenAndServeTLS(tlsCert, tlsKey); err != nil && err != http.ErrServerClosed {
