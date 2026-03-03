@@ -339,9 +339,9 @@ func (r *ClusterController) ensureCoordinatorDeployment(ctx context.Context, clu
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: clusterLabels(cluster)},
+			Selector: &metav1.LabelSelector{MatchLabels: coordinatorPodLabels(cluster)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: clusterLabels(cluster)},
+				ObjectMeta: metav1.ObjectMeta{Labels: coordinatorPodLabels(cluster)},
 				Spec: corev1.PodSpec{
 					InitContainers: []corev1.Container{{
 						Name:  "init-config",
@@ -417,9 +417,9 @@ func (r *ClusterController) ensureWorkerDeployment(ctx context.Context, cluster 
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &workers,
-			Selector: &metav1.LabelSelector{MatchLabels: clusterLabels(cluster)},
+			Selector: &metav1.LabelSelector{MatchLabels: workerPodLabels(cluster)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: clusterLabels(cluster)},
+				ObjectMeta: metav1.ObjectMeta{Labels: workerPodLabels(cluster)},
 				Spec: corev1.PodSpec{
 					InitContainers: []corev1.Container{{
 						Name:  "init-config",
@@ -487,7 +487,7 @@ func (r *ClusterController) ensureService(ctx context.Context, cluster *meridian
 			},
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: clusterLabels(cluster),
+			Selector: coordinatorPodLabels(cluster),
 			Ports: []corev1.ServicePort{{
 				Name: "http",
 				Port: 8080,
@@ -661,6 +661,22 @@ func clusterLabels(cluster *meridianv1alpha1.Cluster) map[string]string {
 	return map[string]string{
 		"meridian.io/cluster": cluster.Name,
 		"meridian.io/profile": cluster.Spec.Profile,
+	}
+}
+
+func coordinatorPodLabels(cluster *meridianv1alpha1.Cluster) map[string]string {
+	return map[string]string{
+		"meridian.io/cluster": cluster.Name,
+		"meridian.io/profile": cluster.Spec.Profile,
+		"meridian.io/role":    "coordinator",
+	}
+}
+
+func workerPodLabels(cluster *meridianv1alpha1.Cluster) map[string]string {
+	return map[string]string{
+		"meridian.io/cluster": cluster.Name,
+		"meridian.io/profile": cluster.Spec.Profile,
+		"meridian.io/role":    "worker",
 	}
 }
 
