@@ -56,6 +56,7 @@ func coordinatorConfigProperties(clusterName, namespace string, p profileConfig)
 	return fmt.Sprintf(`coordinator=true
 node-scheduler.include-coordinator=false
 http-server.http.port=8080
+discovery-server.enabled=true
 discovery.uri=http://localhost:8080
 query.max-memory=%s
 query.max-memory-per-node=%s
