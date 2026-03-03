@@ -34,7 +34,7 @@ info "Waiting for 2 Idle clusters (takes ~60-90s)..."
 wait_for_pool_count "$POOL" "Idle" 2 120
 
 # ── Health check ──────────────────────────────────────────────────────────────
-STATUS=$(curl -sk -o /dev/null -w "%{http_code}" https://localhost:8443/healthz)
+STATUS=$(rest_status GET "/healthz")
 if [[ "$STATUS" == "200" ]]; then
   pass "GET /healthz → 200 OK"
 else

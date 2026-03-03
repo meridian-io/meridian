@@ -28,11 +28,19 @@ spec:
   workers: 1
 EOF
 
-# 1. Cluster appears and operator sets it to Pending
-if wait_for_phase "$CLUSTER" "Pending" 30; then
-  pass "Cluster created and set to Pending"
+# 1. Cluster appears and operator picks it up (Pending or already Idle — nginx
+#    starts fast enough that Pending can be skipped in a single poll interval).
+INITIAL_PHASE=""
+for _ in $(seq 1 10); do
+  INITIAL_PHASE=$(kubectl get cluster "$CLUSTER" -n "$NS" \
+    -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+  [[ -n "$INITIAL_PHASE" ]] && break
+  sleep 2
+done
+if [[ "$INITIAL_PHASE" == "Pending" || "$INITIAL_PHASE" == "Idle" ]]; then
+  pass "Cluster created and picked up by operator (phase: $INITIAL_PHASE)"
 else
-  fail "Cluster did not reach Pending within 30s"
+  fail "Cluster did not reach Pending or Idle within 20s (phase: $INITIAL_PHASE)"
 fi
 
 # 2. Operator created coordinator and worker Deployments

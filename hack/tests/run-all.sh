@@ -125,6 +125,7 @@ SUITES=(
 )
 
 run_suites() {
+  rm -f /tmp/meridian-qe-counts
   local suite_pass=0 suite_fail=0
   for suite in "${SUITES[@]}"; do
     local script="$SCRIPT_DIR/$suite"
@@ -138,10 +139,16 @@ run_suites() {
       ((suite_fail++)) || true
     fi
   done
+  local total_pass=0 total_fail=0
+  while read -r p f; do
+    ((total_pass+=p)) || true
+    ((total_fail+=f)) || true
+  done < /tmp/meridian-qe-counts 2>/dev/null || true
+
   echo ""
   echo "─────────────────────────────────────────────────────"
   echo "  Suites:  $suite_pass passed, $suite_fail failed"
-  echo "  Checks:  $TOTAL_PASS passed, $TOTAL_FAIL failed"
+  echo "  Checks:  $total_pass passed, $total_fail failed"
   echo "─────────────────────────────────────────────────────"
   if [[ $suite_fail -eq 0 && $TOTAL_FAIL -eq 0 ]]; then
     printf "  \033[32m✓ ALL TESTS PASSED\033[0m\n"

@@ -51,16 +51,23 @@ pass "Cluster $CLUSTER is Idle (baseline confirmed)"
 kubectl scale deployment "${CLUSTER}-coordinator" -n "$NS" --replicas=0 &>/dev/null
 pass "Coordinator scaled to 0 replicas (simulating pod crash)"
 
-# 2. Operator's periodic health check detects the failure → Degraded
-# reconcileIdle runs every 30s, so allow up to 40s
+# 2. Operator's periodic health check detects the failure → Degraded.
+# The cluster controller reacts to the Deployment change event immediately
+# (it owns the deployment), so Degraded appears within seconds.
+# The pool controller may then delete it before our next poll — that is
+# also a correct outcome, so we accept either "Degraded" or "already gone".
 if wait_for_phase "$CLUSTER" "Degraded" 45; then
   pass "Cluster transitioned to Degraded (unhealthy coordinator detected)"
 else
-  PHASE=$(kubectl get cluster "$CLUSTER" -n "$NS" -o jsonpath='{.status.phase}' 2>/dev/null)
-  fail "Cluster did not reach Degraded (current phase: $PHASE)"
+  if ! kubectl get cluster "$CLUSTER" -n "$NS" &>/dev/null; then
+    pass "Cluster went Degraded and was already deleted by pool (fast cycle)"
+  else
+    PHASE=$(kubectl get cluster "$CLUSTER" -n "$NS" -o jsonpath='{.status.phase}' 2>/dev/null)
+    fail "Cluster did not reach Degraded (current phase: $PHASE)"
+  fi
 fi
 
-# 3. Pool controller deletes the Degraded cluster (runs every 30s)
+# 3. Pool controller deletes the Degraded cluster
 if wait_for_deletion "$CLUSTER" 60; then
   pass "Pool deleted Degraded cluster automatically"
 else

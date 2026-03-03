@@ -24,6 +24,8 @@ suite_start() {
 }
 
 suite_end() {
+  # Write counts to shared temp file so run-all.sh can aggregate across subprocesses.
+  echo "${SUITE_PASS} ${SUITE_FAIL}" >> /tmp/meridian-qe-counts
   if [[ $SUITE_FAIL -eq 0 ]]; then
     printf "  \033[32mPASS\033[0m (%d checks)\n" "$SUITE_PASS"
     return 0
@@ -139,7 +141,12 @@ _curl() {
 rest_get()    { _curl "$OPERATOR_URL$1"; }
 rest_post()   { _curl -X POST  "$OPERATOR_URL$1" -H "Content-Type: application/json" -d "$2"; }
 rest_patch()  { _curl -X PATCH "$OPERATOR_URL$1" -H "Content-Type: application/json" -d "$2"; }
-rest_delete() { _curl -X DELETE "$OPERATOR_URL$1" -o /dev/null -w "%{http_code}"; }
+# rest_delete captures the HTTP status code without failing on 4xx/5xx (no -f flag).
+rest_delete() {
+  curl -s -X DELETE "$OPERATOR_URL$1" -o /dev/null -w "%{http_code}" \
+    --cert "$TLS_DIR/client.crt" --key "$TLS_DIR/client.key" \
+    --cacert "$TLS_DIR/ca.crt"
+}
 
 # Returns the HTTP status code for a request (uses first client cert by default).
 rest_status() {
