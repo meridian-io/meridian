@@ -41,14 +41,16 @@ check_prereqs() {
   fi
 
   if ! kubectl cluster-info &>/dev/null; then
-    printf "\033[31mERROR\033[0m kubectl cannot reach a cluster.\n"
-    printf "Point KUBECONFIG at a running cluster and re-run.\n"
+    printf "\033[31mERROR\033[0m No Kubernetes cluster found.\n\n"
+    printf "  Run the bootstrap script first to create a local cluster:\n\n"
+    printf "    \033[1m./hack/tests/bootstrap.sh\033[0m\n\n"
     exit 1
   fi
 
   if ! kubectl get namespace "$NS" &>/dev/null; then
-    printf "\033[31mERROR\033[0m Namespace '%s' not found.\n" "$NS"
-    printf "Deploy the Meridian operator first: make deploy\n"
+    printf "\033[31mERROR\033[0m Namespace '%s' not found.\n\n" "$NS"
+    printf "  Run the bootstrap script to set up the environment:\n\n"
+    printf "    \033[1m./hack/tests/bootstrap.sh\033[0m\n\n"
     exit 1
   fi
 }
@@ -152,6 +154,7 @@ run_suites() {
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 printf "\n\033[1mMeridian QE Test Suite\033[0m\n"
+printf "(first time? run \033[1m./hack/tests/bootstrap.sh\033[0m first)\n"
 printf "Cluster: %s\n" "$(kubectl config current-context 2>/dev/null || echo unknown)"
 printf "Date:    %s\n" "$(date)"
 echo "═════════════════════════════════════════════════════"
