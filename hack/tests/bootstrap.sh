@@ -73,14 +73,24 @@ step "Creating local Kubernetes cluster '$CLUSTER_NAME'"
 if "$KIND_BIN" get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
   ok "Cluster '$CLUSTER_NAME' already exists — skipping create"
 else
-  printf "  Creating cluster (this takes ~60s)...\n"
-  "$KIND_BIN" create cluster --name "$CLUSTER_NAME" --wait 120s \
-    --config - <<'KIND_CFG'
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-  - role: control-plane
-KIND_CFG
+  # If a kindest/node image exists locally but is untagged, tag it so kind
+  # can find it without pulling from the internet.
+  UNTAGGED_KIND=$(docker images kindest/node --format "{{.ID}}" 2>/dev/null | head -1)
+  if [[ -n "$UNTAGGED_KIND" ]]; then
+    KIND_NODE_IMAGE=$(docker images kindest/node --format "{{.Repository}}:{{.Tag}}" \
+      2>/dev/null | grep -v '<none>' | head -1)
+    if [[ -z "$KIND_NODE_IMAGE" ]]; then
+      printf "  Found untagged kindest/node image — tagging as kindest/node:local...\n"
+      docker tag "$UNTAGGED_KIND" kindest/node:local &>/dev/null
+      KIND_NODE_IMAGE="kindest/node:local"
+    fi
+    printf "  Creating cluster using local image %s (no download needed)...\n" "$KIND_NODE_IMAGE"
+    "$KIND_BIN" create cluster --name "$CLUSTER_NAME" --wait 120s \
+      --image "$KIND_NODE_IMAGE"
+  else
+    printf "  Creating cluster (downloading node image ~700 MB, first time only)...\n"
+    "$KIND_BIN" create cluster --name "$CLUSTER_NAME" --wait 120s
+  fi
   ok "Cluster created"
 fi
 
