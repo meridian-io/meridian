@@ -68,10 +68,10 @@ start_operator() {
     return 0
   fi
 
-  local binary="$REPO_ROOT/bin/manager"
+  local binary="$REPO_ROOT/bin/meridian-operator"
   if [[ ! -x "$binary" ]]; then
     printf "\033[31mERROR\033[0m Operator binary not found at %s\n" "$binary"
-    printf "Build it first: cd operator && make build\n"
+    printf "Build it first: make build\n"
     exit 1
   fi
 
