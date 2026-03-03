@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: meridian-profile-default
+  namespace: meridian
+data:
+  jvmHeap: "4G"
+  queryMaxMemory: "4GB"
+  queryMaxMemoryPerNode: "1GB"
