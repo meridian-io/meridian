@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLUSTER_NAME="meridian-qe"
 NS="meridian"
-KIND_VERSION="v0.22.0"
+KIND_VERSION="v0.26.0"
 BIN_DIR="$REPO_ROOT/bin"
 KIND_BIN="$BIN_DIR/kind"
 KUBECTL_BIN=$(command -v kubectl 2>/dev/null || echo "$BIN_DIR/kubectl")
@@ -47,7 +47,8 @@ ok "Docker is running"
 
 # ── Step 2: kind ─────────────────────────────────────────────────────────────
 step "Installing kind (Kubernetes in Docker)"
-if [[ ! -x "$KIND_BIN" ]]; then
+CURRENT_KIND_VER=$("$KIND_BIN" version 2>/dev/null | grep -o 'v[0-9]*\.[0-9]*\.[0-9]*' | head -1 || echo "none")
+if [[ ! -x "$KIND_BIN" || "$CURRENT_KIND_VER" != "$KIND_VERSION" ]]; then
   printf "  Downloading kind %s...\n" "$KIND_VERSION"
   curl -sLo "$KIND_BIN" \
     "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-${OS}-${ARCH}"
@@ -73,24 +74,8 @@ step "Creating local Kubernetes cluster '$CLUSTER_NAME'"
 if "$KIND_BIN" get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
   ok "Cluster '$CLUSTER_NAME' already exists — skipping create"
 else
-  # If a kindest/node image exists locally but is untagged, tag it so kind
-  # can find it without pulling from the internet.
-  UNTAGGED_KIND=$(docker images kindest/node --format "{{.ID}}" 2>/dev/null | head -1)
-  if [[ -n "$UNTAGGED_KIND" ]]; then
-    KIND_NODE_IMAGE=$(docker images kindest/node --format "{{.Repository}}:{{.Tag}}" \
-      2>/dev/null | grep -v '<none>' | head -1)
-    if [[ -z "$KIND_NODE_IMAGE" ]]; then
-      printf "  Found untagged kindest/node image — tagging as kindest/node:local...\n"
-      docker tag "$UNTAGGED_KIND" kindest/node:local &>/dev/null
-      KIND_NODE_IMAGE="kindest/node:local"
-    fi
-    printf "  Creating cluster using local image %s (no download needed)...\n" "$KIND_NODE_IMAGE"
-    "$KIND_BIN" create cluster --name "$CLUSTER_NAME" --wait 120s \
-      --image "$KIND_NODE_IMAGE"
-  else
-    printf "  Creating cluster (downloading node image ~700 MB, first time only)...\n"
-    "$KIND_BIN" create cluster --name "$CLUSTER_NAME" --wait 120s
-  fi
+  printf "  Creating cluster (first time downloads ~700 MB node image)...\n"
+  "$KIND_BIN" create cluster --name "$CLUSTER_NAME" --wait 120s
   ok "Cluster created"
 fi
 
