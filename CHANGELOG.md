@@ -7,6 +7,42 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [Unreleased] — v1.3
+
+### Upgrade notes (breaking defaults)
+- **SSE needs a token.** Set `MERIDIAN_MCP_TOKEN` or `--auth-token-file`; clients send `Authorization: Bearer <token>`. `--insecure-no-auth` restores the old behavior for local testing.
+- **`execute_query` is read-only by default.** Start with `--allow-writes` to run INSERT/DROP/etc.
+- **7 tools are off by default:** `create_cluster`, `delete_cluster`, `scale_pool`, `add_catalog`, `remove_catalog`, `rotate_credentials`, `promote_environment`. Enable with `--enable-tools=<names>` or `--enable-tools=all`.
+- **`output_file` takes a file name**, written to `--output-dir` (default: a per-user cache dir, e.g. `~/.cache/meridian/exports`). Absolute paths outside that directory (like `/tmp/results.csv`) are rejected. It is disabled in SSE mode.
+- **`execute_query` returns at most 10,000 rows**, including CSV exports. `max_rows=0` used to mean "no limit" and now means 10,000. Results over the limit are marked truncated, and the query is cancelled in Trino.
+- **`reserve_cluster` requires non-empty `client_id` and `reservation_id`.**
+
+### Security
+- Fixed SQL injection in `list_schemas`, `list_tables`, `get_table_schema` (identifiers are now quoted) and in `add_catalog` / `remove_catalog` (names validated).
+- Fixed arbitrary file write through `execute_query.output_file`.
+- `EXPLAIN ANALYZE` is blocked in read-only mode because it executes the statement.
+- CSV export no longer follows symlinks or hard links, and refuses an output directory that other users can write to.
+- `/readyz` no longer returns internal error details to unauthenticated callers.
+- A statement is never re-submitted after a 502/504 from a proxy, so it can't run twice.
+- Corrected tool safety labels (`execute_query`, `scale_pool`, `promote_environment`).
+
+### Fixed
+- `reserve_cluster`: two clients could reserve the same cluster. Reservations now use optimistic locking and retry the next idle cluster on conflict. Repeating the same `(client_id, reservation_id)` returns the same cluster, as documented.
+- SSE told remote clients to post to `http://localhost:<port>`. The message endpoint is now relative, or set with `--base-url`.
+- Catalog cache invalidation after `add_catalog` / `remove_catalog` never matched any entry. A query in flight during invalidation no longer re-caches stale results.
+- A cancelled request no longer fails other callers waiting on the same query.
+- Cached results ignored `max_rows`.
+- Queries cut off at `max_rows` kept running in Trino; they are now cancelled.
+- The MCP server didn't notice an operator installed after it started.
+
+### Added
+- `/healthz` and `/readyz` endpoints, graceful shutdown on SIGTERM, keep-alive on SSE streams.
+- Structured logging (`--log-format json|text`), bounded query cache (`--cache-max-entries`), retries when Trino returns 502/503/504, shared HTTP connection pool, 30s Kubernetes API timeout.
+- `release_cluster` takes an optional `client_id` ownership check.
+- Unit tests for the MCP server (previously none).
+
+---
+
 ## [v0.1.0] — 2026-03-01
 
 First release of Project Meridian — the open-source Trino control plane.
