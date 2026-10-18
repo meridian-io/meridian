@@ -17,7 +17,8 @@ func ScalePoolTool() mcp.Tool {
 		mcp.WithString("pool_name", mcp.Required(), mcp.Description("Name of the ClusterPool to scale.")),
 		mcp.WithNumber("replicas", mcp.Required(), mcp.Description("Desired number of clusters in the pool.")),
 		mcp.WithString("namespace", mcp.Description("Kubernetes namespace. Defaults to the configured namespace.")),
-		mcp.WithDestructiveHintAnnotation(false),
+		// Scaling down deletes idle clusters.
+		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithIdempotentHintAnnotation(true),
 	)
 }

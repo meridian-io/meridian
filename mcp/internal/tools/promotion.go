@@ -20,7 +20,7 @@ func PromoteEnvironmentTool() mcp.Tool {
 		mcp.WithString("source_namespace", mcp.Required(), mcp.Description("Source namespace (e.g. meridian-dev).")),
 		mcp.WithString("target_namespace", mcp.Required(), mcp.Description("Target namespace (e.g. meridian-staging).")),
 		mcp.WithBoolean("confirm", mcp.Description("Set to true to apply the promotion. Defaults to false (dry-run — shows diff only).")),
-		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithIdempotentHintAnnotation(true),
 	)
 }

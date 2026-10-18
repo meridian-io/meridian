@@ -36,12 +36,28 @@ docker pull ghcr.io/meridian-io/trino-mcp-server:v1.1
 # stdio — for Claude Desktop / local MCP clients
 meridian --transport stdio --namespace meridian
 
-# SSE — for remote / team use (Cursor, Claude API)
+# SSE — for remote / team use (Cursor, Claude API). A bearer token is required.
+export MERIDIAN_MCP_TOKEN=$(openssl rand -hex 32)
 meridian --transport sse --addr :8080 --namespace meridian
 
-# In-cluster (reads service account token automatically)
-meridian --transport sse --addr :8080
+# In-cluster (reads service account token automatically; token from a mounted Secret)
+meridian --transport sse --addr :8080 --auth-token-file /etc/meridian/token
 ```
+
+### Security defaults
+
+Meridian is safe by default. Each default can be relaxed with a flag:
+
+| Default | Why | To change |
+|---|---|---|
+| SSE requires a bearer token (`Authorization: Bearer <token>`, min 16 chars) | Without it, anyone who can reach the port can run queries | `MERIDIAN_MCP_TOKEN` or `--auth-token-file`. `--insecure-no-auth` exists for local testing only |
+| `execute_query` is **read-only** (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, VALUES, TABLE) | An AI client shouldn't be able to `DROP` or `DELETE` by accident | `--allow-writes` |
+| 12 core tools are on; 7 tools that change cluster or catalog config are **off** | Smaller blast radius | `--enable-tools=scale_pool,add_catalog` or `--enable-tools=all` |
+| `output_file` writes only into `--output-dir` (default: per-user cache dir, e.g. `~/.cache/meridian/exports`), and is disabled in SSE mode | Remote callers must not write files onto the server | `--output-dir` |
+
+The read-only check is a guardrail for AI clients. Use Trino access control as the real security boundary. For example, connector table functions such as `system.query(...)` send SQL to the underlying database and are not inspected by Meridian.
+
+Other flags: `--base-url` (public URL behind a proxy), `--cache-max-entries` (default 1000), `--log-format json|text`. Health endpoints in SSE mode: `/healthz` (process alive) and `/readyz` (Kubernetes API reachable). Neither requires a token.
 
 ### Connect to Claude Desktop
 
@@ -60,27 +76,34 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 ### Available MCP Tools
 
+**Core tools (on by default)**
+
 | Tool | Description | Cache TTL |
 |---|---|---|
+| `list_pools` | List all ClusterPools with current state | — |
 | `list_clusters` | List all clusters with phase, health, coordinator URL | — |
 | `get_cluster` | Get full details of a specific cluster | — |
-| `create_cluster` | Provision a new Trino cluster from a profile | — |
-| `delete_cluster` | Tear down a cluster | — |
-| `reserve_cluster` | Assign an idle cluster to a client (idempotent) | — |
-| `release_cluster` | Return a cluster to the idle pool | — |
-| `scale_pool` | Set desired replica count on a ClusterPool | — |
-| `list_pools` | List all ClusterPools with current state | — |
-| `add_catalog` | Push a new catalog to a cluster — no restart | invalidates cache |
-| `remove_catalog` | Remove a catalog — no restart | invalidates cache |
+| `reserve_cluster` | Claim an idle cluster for a client. Idempotent and safe under concurrency: two clients never get the same cluster | — |
+| `release_cluster` | Return a cluster to the idle pool. Pass `client_id` to release only your own reservation | — |
 | `list_catalogs` | List all catalogs registered in a cluster | 5 min |
 | `list_schemas` | List schemas in a catalog | 5 min |
 | `list_tables` | List tables in a catalog schema | 5 min |
 | `get_table_schema` | Get column names and data types for a table | 5 min |
-| `execute_query` | Execute SQL and return results as a table. Tagged with `mcp_query_id` for audit correlation. Use `output_file` to write large results as CSV. | none (opt-in via `ttl` param) |
-| `explain_query` | Return the Trino execution plan for a SQL statement without executing it | 5 min |
-| `rotate_credentials` | Trigger Vault/ASM credential refresh | — |
+| `execute_query` | Run SQL (read-only by default) and return results as a table. Tagged with `mcp_query_id`. Max 10,000 rows | none (opt-in via `ttl` param) |
+| `explain_query` | Return the Trino execution plan without running the query | 5 min |
 | `get_audit_log` | Fetch cluster lifecycle and management events | — |
-| `promote_environment` | Promote config from dev → staging → prod | — |
+
+**Held tools (enable with `--enable-tools`)**
+
+| Tool | Description |
+|---|---|
+| `create_cluster` | Provision a cluster outside a pool |
+| `delete_cluster` | Tear down a cluster |
+| `scale_pool` | Set desired replica count on a ClusterPool |
+| `add_catalog` | Push a new catalog to a cluster, no restart (invalidates the catalog cache) |
+| `remove_catalog` | Remove a catalog, no restart (invalidates the catalog cache) |
+| `rotate_credentials` | Trigger a Vault/ASM credential refresh |
+| `promote_environment` | Copy a pool config between namespaces (dev → staging → prod) |
 
 ### Query Result Caching
 
@@ -109,7 +132,7 @@ Meridian caches Trino query results in memory to avoid redundant round-trips for
 Run SELECT * FROM mysql_testdb.testdb.orders on trino-local with ttl=60
 ```
 
-**Cache key:** SHA-256 hash of `(coordinatorURL + sql)`. Different SQL or different cluster = distinct cache entry, no collisions.
+**Cache key:** SHA-256 hash of `(coordinatorURL, max_rows, sql)`, prefixed by coordinator. A result cut off at `max_rows` is never served to a request that asked for more rows. The cache holds at most `--cache-max-entries` results (default 1000).
 
 **Edge case — `add_catalog`:** When you add or remove a catalog via MCP, the cache for that coordinator is immediately invalidated. `list_catalogs` called right after will always hit Trino and return the current state — no stale data.
 
@@ -140,15 +163,15 @@ Note: tags are applied only on fresh Trino calls. Cache hits (`[cache hit]`) ski
 
 ### CSV File Export
 
-For large result sets that would overflow the context window, use `output_file` to write results as CSV instead of returning them inline:
+For large result sets that would overflow the context window, use `output_file` to write results as CSV instead of returning them inline. Pass a plain file name. It is written into `--output-dir` (default: per-user cache dir, e.g. `~/.cache/meridian/exports`). Directories and `..` are rejected, and the option is disabled in SSE mode.
 
 ```
-Run SELECT * FROM mysql_testdb.testdb.orders on trino-local with output_file=/tmp/orders.csv
+Run SELECT * FROM mysql_testdb.testdb.orders on trino-local with output_file=orders.csv
 ```
 
 Returns:
 ```
-Results written to /tmp/orders.csv (1042 rows, 8 columns)
+Results written to /home/you/.cache/meridian/exports/orders.csv (1042 rows, 8 columns)
 query_id: 3f2a1b4c-...
 ```
 

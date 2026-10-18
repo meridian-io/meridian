@@ -17,21 +17,36 @@ const (
 
 // ── execute_query ─────────────────────────────────────────────────────────────
 
-func ExecuteQueryTool() mcp.Tool {
-	return mcp.NewTool("execute_query",
-		mcp.WithDescription("Execute a SQL query against a Trino cluster and return results as a table. Results are NOT cached by default — set ttl=N to cache for N seconds if the underlying data is static. Each query is tagged with a unique mcp_query_id for audit trail correlation in Trino's query history. For large result sets, set output_file to a file path to write results as CSV instead of returning them inline."),
+// maxRowsCap bounds how many rows one call may hold in memory.
+const maxRowsCap = 10000
+
+func ExecuteQueryTool(opts QueryOptions) mcp.Tool {
+	desc := "Execute a SQL query against a Trino cluster and return results as a table. Results are NOT cached by default — set ttl=N to cache for N seconds if the underlying data is static. Each query is tagged with a unique mcp_query_id for audit trail correlation in Trino's query history."
+	if !opts.AllowWrites {
+		desc += " This server is read-only: only SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, VALUES, and TABLE statements are accepted."
+	}
+	toolOpts := []mcp.ToolOption{
+		mcp.WithDescription(desc),
 		mcp.WithString("cluster_name", mcp.Required(), mcp.Description("Name of the target Cluster resource.")),
 		mcp.WithString("sql", mcp.Required(), mcp.Description("SQL statement to execute.")),
 		mcp.WithString("namespace", mcp.Description("Kubernetes namespace. Defaults to the configured namespace.")),
-		mcp.WithNumber("max_rows", mcp.Description("Maximum rows to return. Defaults to 100.")),
+		mcp.WithNumber("max_rows", mcp.Description(fmt.Sprintf("Maximum rows to return. Defaults to 100, max %d.", maxRowsCap))),
 		mcp.WithNumber("ttl", mcp.Description("Cache TTL in seconds. Defaults to 0 (no cache). Set to a positive value to cache results for static data.")),
-		mcp.WithString("output_file", mcp.Description("File path to write results as CSV (e.g. /tmp/results.csv). When set, results are written to the file and a summary is returned instead of the full table — useful for large result sets that would overflow the context window.")),
-		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(false),
-	)
+	}
+	if opts.OutputDir != "" {
+		toolOpts = append(toolOpts, mcp.WithString("output_file", mcp.Description(
+			"CSV file name (e.g. results.csv) to write results to instead of returning them inline — useful for large result sets. Files are written to "+opts.OutputDir+"; directories are not allowed.")))
+	}
+	if opts.AllowWrites {
+		toolOpts = append(toolOpts, mcp.WithDestructiveHintAnnotation(true))
+	} else {
+		toolOpts = append(toolOpts, mcp.WithReadOnlyHintAnnotation(true), mcp.WithDestructiveHintAnnotation(false))
+	}
+	return mcp.NewTool("execute_query", toolOpts...)
 }
 
-func ExecuteQueryHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func ExecuteQueryHandler(c *k8s.Client, opts QueryOptions) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		clusterName := mcp.ParseString(req, "cluster_name", "")
 		sql := mcp.ParseString(req, "sql", "")
@@ -40,8 +55,25 @@ func ExecuteQueryHandler(c *k8s.Client) func(context.Context, mcp.CallToolReques
 		ttlSecs := mcp.ParseFloat64(req, "ttl", 0)
 		outputFile := mcp.ParseString(req, "output_file", "")
 
-		if sql == "" {
+		if strings.TrimSpace(sql) == "" {
 			return nil, fmt.Errorf("sql is required")
+		}
+		if !opts.AllowWrites {
+			if err := checkReadOnly(sql); err != nil {
+				return nil, err
+			}
+		}
+		if maxRows <= 0 || maxRows > maxRowsCap {
+			maxRows = maxRowsCap
+		}
+
+		var outPath string
+		if outputFile != "" {
+			p, err := resolveOutputPath(opts.OutputDir, outputFile)
+			if err != nil {
+				return nil, err
+			}
+			outPath = p
 		}
 
 		coordinatorURL, err := getCoordinatorURL(ctx, c, clusterName, ns)
@@ -55,8 +87,8 @@ func ExecuteQueryHandler(c *k8s.Client) func(context.Context, mcp.CallToolReques
 			return nil, fmt.Errorf("execute query: %w", err)
 		}
 
-		if outputFile != "" {
-			msg, err := writeResultToCSV(result, outputFile)
+		if outPath != "" {
+			msg, err := writeResultToCSV(result, outPath)
 			if err != nil {
 				return nil, err
 			}
@@ -81,14 +113,21 @@ func ExplainQueryTool() mcp.Tool {
 	)
 }
 
-func ExplainQueryHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func ExplainQueryHandler(c *k8s.Client, opts QueryOptions) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		clusterName := mcp.ParseString(req, "cluster_name", "")
 		sql := mcp.ParseString(req, "sql", "")
 		ns := mcp.ParseString(req, "namespace", "")
 
-		if sql == "" {
+		if strings.TrimSpace(sql) == "" {
 			return nil, fmt.Errorf("sql is required")
+		}
+		explain := "EXPLAIN " + sql
+		if !opts.AllowWrites {
+			// EXPLAIN ANALYZE runs the statement, so it is blocked like a write.
+			if err := checkReadOnly(explain); err != nil {
+				return nil, err
+			}
 		}
 
 		coordinatorURL, err := getCoordinatorURL(ctx, c, clusterName, ns)
@@ -96,8 +135,7 @@ func ExplainQueryHandler(c *k8s.Client) func(context.Context, mcp.CallToolReques
 			return nil, err
 		}
 
-		result, err := executeTrinoQueryCached(ctx, coordinatorURL,
-			fmt.Sprintf("EXPLAIN %s", sql), 0, schemaCacheTTL)
+		result, err := executeTrinoQueryCached(ctx, coordinatorURL, explain, 0, schemaCacheTTL)
 		if err != nil {
 			return nil, fmt.Errorf("explain query: %w", err)
 		}
@@ -158,13 +196,18 @@ func ListSchemasHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequest
 		catalog := mcp.ParseString(req, "catalog", "")
 		ns := mcp.ParseString(req, "namespace", "")
 
+		qCatalog, err := quoteIdent(catalog)
+		if err != nil {
+			return nil, fmt.Errorf("catalog: %w", err)
+		}
+
 		coordinatorURL, err := getCoordinatorURL(ctx, c, clusterName, ns)
 		if err != nil {
 			return nil, err
 		}
 
 		result, err := executeTrinoQueryCached(ctx, coordinatorURL,
-			fmt.Sprintf("SHOW SCHEMAS FROM %s", catalog), 0, schemaCacheTTL)
+			"SHOW SCHEMAS FROM "+qCatalog, 0, schemaCacheTTL)
 		if err != nil {
 			return nil, fmt.Errorf("list schemas: %w", err)
 		}
@@ -202,11 +245,15 @@ func GetTableSchemaHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequ
 		}
 
 		// Build fully qualified reference when catalog/schema are passed separately.
-		ref := table
+		raw := table
 		if catalog != "" && schema != "" && !strings.Contains(table, ".") {
-			ref = fmt.Sprintf("%s.%s.%s", catalog, schema, table)
+			raw = catalog + "." + schema + "." + table
 		} else if schema != "" && !strings.Contains(table, ".") {
-			ref = fmt.Sprintf("%s.%s", schema, table)
+			raw = schema + "." + table
+		}
+		ref, err := quoteQualified(raw, 3)
+		if err != nil {
+			return nil, err
 		}
 
 		coordinatorURL, err := getCoordinatorURL(ctx, c, clusterName, ns)
@@ -215,7 +262,7 @@ func GetTableSchemaHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequ
 		}
 
 		result, err := executeTrinoQueryCached(ctx, coordinatorURL,
-			fmt.Sprintf("DESCRIBE %s", ref), 0, schemaCacheTTL)
+			"DESCRIBE "+ref, 0, schemaCacheTTL)
 		if err != nil {
 			return nil, fmt.Errorf("get table schema: %w", err)
 		}
@@ -246,13 +293,22 @@ func ListTablesHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequest)
 		schema := mcp.ParseString(req, "schema", "")
 		ns := mcp.ParseString(req, "namespace", "")
 
+		qCatalog, err := quoteIdent(catalog)
+		if err != nil {
+			return nil, fmt.Errorf("catalog: %w", err)
+		}
+		qSchema, err := quoteIdent(schema)
+		if err != nil {
+			return nil, fmt.Errorf("schema: %w", err)
+		}
+
 		coordinatorURL, err := getCoordinatorURL(ctx, c, clusterName, ns)
 		if err != nil {
 			return nil, err
 		}
 
 		result, err := executeTrinoQueryCached(ctx, coordinatorURL,
-			fmt.Sprintf("SHOW TABLES FROM %s.%s", catalog, schema), 0, schemaCacheTTL)
+			"SHOW TABLES FROM "+qCatalog+"."+qSchema, 0, schemaCacheTTL)
 		if err != nil {
 			return nil, fmt.Errorf("list tables: %w", err)
 		}

@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sync"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -29,13 +32,27 @@ var (
 	}
 )
 
+// operatorReprobeInterval is how often a missing operator is checked for again,
+// so the MCP server notices an operator installed after it started.
+const operatorReprobeInterval = 30 * time.Second
+
 // Client wraps the Kubernetes dynamic + typed clients.
 type Client struct {
 	Dynamic   dynamic.Interface
 	Typed     kubernetes.Interface
 	Namespace string
 
+	mu          sync.Mutex
 	hasMeridian bool
+	lastProbe   time.Time
+}
+
+// NewClientFromInterfaces builds a Client from existing clients (used in tests
+// and by callers that already hold clients).
+func NewClientFromInterfaces(dyn dynamic.Interface, typed kubernetes.Interface, namespace string) *Client {
+	c := &Client{Dynamic: dyn, Typed: typed, Namespace: namespace}
+	c.HasMeridianOperator()
+	return c
 }
 
 // NewClient builds a Kubernetes client from kubeconfig or in-cluster config.
@@ -55,24 +72,39 @@ func NewClient(kubeconfig, namespace string) (*Client, error) {
 		return nil, fmt.Errorf("typed client: %w", err)
 	}
 
-	c := &Client{
-		Dynamic:   dyn,
-		Typed:     typed,
-		Namespace: namespace,
-	}
-	c.hasMeridian = c.detectMeridianOperator()
-	return c, nil
+	return NewClientFromInterfaces(dyn, typed, namespace), nil
 }
 
 // HasMeridianOperator reports whether the Meridian operator CRDs are installed.
-func (c *Client) HasMeridianOperator() bool { return c.hasMeridian }
+// A positive result is remembered; a negative one is re-checked periodically.
+func (c *Client) HasMeridianOperator() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.hasMeridian || (!c.lastProbe.IsZero() && time.Since(c.lastProbe) < operatorReprobeInterval) {
+		return c.hasMeridian
+	}
+	c.lastProbe = time.Now()
+	c.hasMeridian = c.detectMeridianOperator()
+	return c.hasMeridian
+}
 
 // detectMeridianOperator probes for the ClusterPool CRD.
 func (c *Client) detectMeridianOperator() bool {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	_, err := c.Dynamic.Resource(ClusterPoolGVR).Namespace(c.Namespace).
 		List(ctx, metav1.ListOptions{Limit: 1})
 	return err == nil
+}
+
+// Ready checks that the Kubernetes API server is reachable.
+func (c *Client) Ready(ctx context.Context) error {
+	rc := c.Typed.Discovery().RESTClient()
+	if rc == nil || reflect.ValueOf(rc).IsNil() { // fake clients have no REST client
+		_, err := c.Typed.Discovery().ServerVersion()
+		return err
+	}
+	return rc.Get().AbsPath("/version").Do(ctx).Error()
 }
 
 // ListClusters returns all Cluster CRs in the configured namespace.
@@ -159,6 +191,18 @@ func (c *Client) resolveNamespace(ns string) string {
 }
 
 func buildConfig(kubeconfig string) (*rest.Config, error) {
+	cfg, err := loadConfig(kubeconfig)
+	if err != nil {
+		return nil, err
+	}
+	// Never let a hung API call block a tool forever.
+	if cfg.Timeout == 0 {
+		cfg.Timeout = 30 * time.Second
+	}
+	return cfg, nil
+}
+
+func loadConfig(kubeconfig string) (*rest.Config, error) {
 	// 1. Explicit path via flag.
 	if kubeconfig != "" {
 		return clientcmd.BuildConfigFromFlags("", kubeconfig)
