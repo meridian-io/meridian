@@ -60,9 +60,7 @@ green "==> Creating namespace: $NS"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 
 green "==> Applying CRD definitions"
-kubectl apply -f config/crd/bases/meridian.io_clusters.yaml
-kubectl apply -f config/crd/bases/meridian.io_clusterpools.yaml
-kubectl apply -f config/crd/bases/meridian.io_clusterpoolautoscalers.yaml
+kubectl apply -f operator/config/crd/bases/
 
 # Wait for CRDs to be established.
 kubectl wait --for=condition=Established crd/clusters.meridian.io --timeout=30s

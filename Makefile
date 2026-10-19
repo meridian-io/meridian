@@ -5,7 +5,7 @@ MCP_IMG     := ghcr.io/project-meridian/meridian-mcp:latest
 GOPATH      := $(shell go env GOPATH 2>/dev/null)
 
 .PHONY: all build build-mcp test test-mcp test-all lint lint-mcp \
-        generate manifests install run docker-build docker-build-mcp \
+        generate manifests verify-manifests install run docker-build docker-build-mcp \
         helm-install helm-uninstall mcp-tidy release-dry-run
 
 all: build build-mcp
@@ -62,13 +62,17 @@ lint:
 generate:
 	cd operator && controller-gen object:headerFile="../hack/boilerplate.go.txt" paths="./..."
 
-## Generate CRD manifests
+## Generate CRD and RBAC manifests (single source of truth: operator/config)
 manifests:
-	cd operator && controller-gen crd rbac:roleName=meridian-manager-role webhook paths="./..." output:crd:artifacts:config=../config/crd
+	cd operator && controller-gen crd rbac:roleName=meridian-operator paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
+
+## Fail if generated manifests differ from what is committed (used in CI)
+verify-manifests: manifests
+	@git diff --exit-code -- operator/config || (echo "CRD/RBAC manifests are out of date — run 'make manifests' and commit the result" && exit 1)
 
 ## Install CRDs into the cluster
 install: manifests
-	kubectl apply -f config/crd/
+	kubectl apply -f operator/config/crd/bases/
 
 ## Run operator locally against current kubeconfig
 run: generate manifests

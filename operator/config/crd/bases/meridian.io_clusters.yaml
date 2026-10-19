@@ -149,6 +149,11 @@ spec:
                 description: IdleAt is when the cluster last became idle.
                 format: date-time
                 type: string
+              lastRotatedAt:
+                description: LastRotatedAt is when the most recent successful credential
+                  rotation completed.
+                format: date-time
+                type: string
               phase:
                 description: Phase is the current lifecycle phase of the cluster.
                 type: string
@@ -160,17 +165,17 @@ spec:
                 description: ReservedAt is when the cluster was last reserved.
                 format: date-time
                 type: string
-              lastRotatedAt:
-                description: LastRotatedAt is when credentials were last successfully rotated.
-                format: date-time
+              rotatingCatalog:
+                description: |-
+                  RotatingCatalog is the catalog currently being rotated, if any.
+                  Cleared after rotation completes (success or non-retriable failure).
                 type: string
               rotationFailures:
-                description: RotationFailures is the count of consecutive credential rotation failures.
+                description: |-
+                  RotationFailures is the count of consecutive credential rotation failures.
+                  Used to compute exponential backoff. Reset to 0 on the next success.
                 format: int32
                 type: integer
-              rotatingCatalog:
-                description: RotatingCatalog is the catalog name currently being rotated.
-                type: string
             type: object
         type: object
     served: true

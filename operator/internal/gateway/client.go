@@ -11,6 +11,11 @@ import (
 
 const requestTimeout = 10 * time.Second
 
+// httpClient is dedicated to gateway calls so its timeout can't be changed by
+// other code mutating http.DefaultClient. The per-request context timeout
+// still applies.
+var httpClient = &http.Client{Timeout: requestTimeout}
+
 type backendRequest struct {
 	Name         string `json:"name"`
 	ProxyTo      string `json:"proxyTo,omitempty"`
@@ -52,7 +57,7 @@ func post(ctx context.Context, url string, body interface{}) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}

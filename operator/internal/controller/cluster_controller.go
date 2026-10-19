@@ -8,11 +8,13 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -43,13 +45,21 @@ type ClusterController struct {
 	Providers map[string]credentials.SecretProvider
 	Rotator   *credentials.Rotator
 	Cache     map[string]*credentials.SecretCache
+
+	// MaxConcurrentReconciles lets several clusters reconcile in parallel.
+	// controller-runtime never reconciles the same cluster twice at once.
+	// 0 means DefaultClusterConcurrency.
+	MaxConcurrentReconciles int
 }
+
+// DefaultClusterConcurrency is the default number of clusters reconciled in parallel.
+const DefaultClusterConcurrency = 5
 
 // +kubebuilder:rbac:groups=meridian.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=meridian.io,resources=clusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get
 
 func (r *ClusterController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
@@ -327,6 +337,7 @@ func (r *ClusterController) ensureCoordinatorDeployment(ctx context.Context, clu
 		return err
 	}
 
+	p := lookupProfile(ctx, r.Client, cluster.Namespace, cluster.Spec.Profile)
 	replicas := int32(1)
 	dep = &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -344,8 +355,9 @@ func (r *ClusterController) ensureCoordinatorDeployment(ctx context.Context, clu
 				ObjectMeta: metav1.ObjectMeta{Labels: coordinatorPodLabels(cluster)},
 				Spec: corev1.PodSpec{
 					InitContainers: []corev1.Container{{
-						Name:  "init-config",
-						Image: "busybox:1.36",
+						Name:      "init-config",
+						Image:     "busybox:1.36",
+						Resources: initContainerResources,
 						Command: []string{"sh", "-c",
 							"cp /etc/trino-static/coordinator.config.properties /etc/trino/config.properties && " +
 								"cp /etc/trino-static/jvm.config /etc/trino/jvm.config && " +
@@ -358,9 +370,10 @@ func (r *ClusterController) ensureCoordinatorDeployment(ctx context.Context, clu
 						},
 					}},
 					Containers: []corev1.Container{{
-						Name:  "trino-coordinator",
-						Image: cluster.Spec.Image,
-						Ports: []corev1.ContainerPort{{ContainerPort: 8080}},
+						Name:      "trino-coordinator",
+						Image:     cluster.Spec.Image,
+						Ports:     []corev1.ContainerPort{{ContainerPort: 8080}},
+						Resources: p.Coordinator.resourceRequirements(),
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "trino-etc", MountPath: "/etc/trino"},
 						},
@@ -405,6 +418,7 @@ func (r *ClusterController) ensureWorkerDeployment(ctx context.Context, cluster 
 	if workers == 0 {
 		workers = 2
 	}
+	p := lookupProfile(ctx, r.Client, cluster.Namespace, cluster.Spec.Profile)
 
 	dep = &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -422,8 +436,9 @@ func (r *ClusterController) ensureWorkerDeployment(ctx context.Context, cluster 
 				ObjectMeta: metav1.ObjectMeta{Labels: workerPodLabels(cluster)},
 				Spec: corev1.PodSpec{
 					InitContainers: []corev1.Container{{
-						Name:  "init-config",
-						Image: "busybox:1.36",
+						Name:      "init-config",
+						Image:     "busybox:1.36",
+						Resources: initContainerResources,
 						Command: []string{"sh", "-c",
 							"cp /etc/trino-static/worker.config.properties /etc/trino/config.properties && " +
 								"cp /etc/trino-static/jvm.config /etc/trino/jvm.config && " +
@@ -436,8 +451,9 @@ func (r *ClusterController) ensureWorkerDeployment(ctx context.Context, cluster 
 						},
 					}},
 					Containers: []corev1.Container{{
-						Name:  "trino-worker",
-						Image: cluster.Spec.Image,
+						Name:      "trino-worker",
+						Image:     cluster.Spec.Image,
+						Resources: p.Worker.resourceRequirements(),
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "trino-etc", MountPath: "/etc/trino"},
 						},
@@ -657,6 +673,21 @@ func setCondition(conditions []metav1.Condition, newCond metav1.Condition) []met
 	return append(conditions, newCond)
 }
 
+// initContainerResources sizes the tiny config-copy init container, so it
+// counts correctly against a namespace ResourceQuota on requests.cpu,
+// requests.memory and limits.memory. No container sets a CPU limit (it
+// throttles the JVM), so a quota on limits.cpu needs a LimitRange that
+// supplies a default CPU limit.
+var initContainerResources = corev1.ResourceRequirements{
+	Requests: corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("10m"),
+		corev1.ResourceMemory: resource.MustParse("16Mi"),
+	},
+	Limits: corev1.ResourceList{
+		corev1.ResourceMemory: resource.MustParse("32Mi"),
+	},
+}
+
 func clusterLabels(cluster *meridianv1alpha1.Cluster) map[string]string {
 	return map[string]string{
 		"meridian.io/cluster": cluster.Name,
@@ -681,9 +712,14 @@ func workerPodLabels(cluster *meridianv1alpha1.Cluster) map[string]string {
 }
 
 func (r *ClusterController) SetupWithManager(mgr ctrl.Manager) error {
+	n := r.MaxConcurrentReconciles
+	if n <= 0 {
+		n = DefaultClusterConcurrency
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&meridianv1alpha1.Cluster{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: n}).
 		Complete(r)
 }

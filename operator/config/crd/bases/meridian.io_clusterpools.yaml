@@ -58,6 +58,27 @@ spec:
           spec:
             description: ClusterPoolSpec defines the desired state of a ClusterPool.
             properties:
+              gateway:
+                description: |-
+                  Gateway configures optional Trino Gateway integration. When set, clusters are
+                  automatically registered on Idle and deregistered on deletion.
+                properties:
+                  endpoint:
+                    description: Endpoint is the Trino Gateway base URL (e.g. "http://trino-gateway:8080").
+                    type: string
+                  routingGroup:
+                    description: |-
+                      RoutingGroup is the routing group clusters are registered under.
+                      Defaults to the pool workload value, or "adhoc" if workload is also unset.
+                    type: string
+                required:
+                - endpoint
+                type: object
+              maxClusterAge:
+                description: |-
+                  MaxClusterAge is the maximum age of an idle cluster before it is recycled and replaced.
+                  Accepts Go duration strings: "24h", "12h". If unset, no age-based recycling occurs.
+                type: string
               replicas:
                 default: 3
                 description: Replicas is the desired number of standby (idle) clusters
@@ -67,10 +88,10 @@ spec:
                 type: integer
               reservationTtl:
                 default: 4h
-                description: ReservationTTL is the maximum duration a cluster may
-                  remain Reserved before being automatically released back to the
-                  pool (e.g. after a client crash). Accepts Go duration strings such
-                  as "4h" or "30m".
+                description: |-
+                  ReservationTTL is the maximum duration a cluster may remain Reserved before
+                  being automatically released back to the pool (e.g. after a client crash).
+                  Accepts Go duration strings: "4h", "30m". Defaults to "4h".
                 type: string
               template:
                 description: Template defines the profile used when creating new clusters.
@@ -92,22 +113,9 @@ spec:
                 - profile
                 type: object
               workload:
-                description: Workload tags all clusters in this pool with a workload type (e.g. "analytics", "etl"). Used to route reservations without specifying a cluster name or profile.
-                type: string
-              gateway:
-                description: Gateway configures optional Trino Gateway integration. Clusters are automatically registered on Idle and deregistered on deletion.
-                properties:
-                  endpoint:
-                    description: Endpoint is the Trino Gateway base URL (e.g. "http://trino-gateway:8080").
-                    type: string
-                  routingGroup:
-                    description: RoutingGroup is the routing group for registered backends. Defaults to the pool workload, or "adhoc".
-                    type: string
-                required:
-                - endpoint
-                type: object
-              maxClusterAge:
-                description: MaxClusterAge is the maximum age of an idle cluster before it is recycled and replaced. Accepts Go duration strings such as "24h" or "12h". If unset, no age-based recycling occurs.
+                description: |-
+                  Workload tags all clusters in this pool with a workload type (e.g. "analytics", "etl").
+                  Use as a routing key in reservations: reserve_cluster(workload="analytics").
                 type: string
             required:
             - replicas
@@ -174,7 +182,8 @@ spec:
                   type: object
                 type: array
               degradedReplicas:
-                description: DegradedReplicas is the number of clusters currently in Degraded phase.
+                description: DegradedReplicas is the number of clusters currently
+                  in Degraded phase.
                 format: int32
                 type: integer
               failedReplicas:

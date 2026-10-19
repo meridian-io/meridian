@@ -35,6 +35,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Queries cut off at `max_rows` kept running in Trino; they are now cancelled.
 - The MCP server didn't notice an operator installed after it started.
 
+### Operator
+- **Pod resources from profiles.** Trino pods get memory requests/limits and CPU requests (default 5Gi/1, medium 10Gi/2, large 20Gi/4). Custom profiles can set `memory`, `cpu`, and role-specific overrides. Previously pods had none and could starve their node. Applies to newly created clusters.
+- **Faster pool fill.** Pools create up to 3 clusters per cycle (`--pool-max-creates-per-cycle`), and up to 5 clusters reconcile in parallel (`--cluster-concurrency`).
+- **Readiness probe.** `/readyz` passes only after the operator's caches have synced.
+- **REST API lifecycle.** The mTLS REST API now starts and stops with the operator and drains in-flight requests on shutdown. A REST startup failure (e.g. a bad certificate) now stops the operator instead of being logged and ignored.
+- **Fixed:** RBAC was missing `get` on Secrets, so credential rotation with the Kubernetes provider was forbidden in a real cluster. Secrets are now read directly instead of through a cluster-wide cache.
+- **Fixed:** `make install` and `hack/setup-local.sh` applied stale CRDs that silently dropped `workload`, `gateway`, `maxClusterAge`, and `reservationTtl`. There is now one generated copy in `operator/config/crd/bases`, plus `make verify-manifests` to catch drift.
+- **Fixed:** cluster names could collide when several were created at once. Names now use a random 8-character suffix.
+- Init containers have explicit resources. No container sets a CPU limit (it throttles the JVM), so a namespace quota on `limits.cpu` needs a LimitRange with a default CPU limit.
+- RBAC now includes `update` on `clusters/finalizers` and `clusterpools/finalizers`, required where owner-reference permissions are enforced (e.g. OpenShift).
+- A custom profile ConfigMap named after a built-in tier (e.g. `meridian-profile-large`) now starts from that tier instead of `default`.
+- Pools recount clusters against the API server before creating more, so a lagging cache can't make them over-create.
+
 ### Added
 - `/healthz` and `/readyz` endpoints, graceful shutdown on SIGTERM, keep-alive on SSE streams.
 - Structured logging (`--log-format json|text`), bounded query cache (`--cache-max-entries`), retries when Trino returns 502/503/504, shared HTTP connection pool, 30s Kubernetes API timeout.

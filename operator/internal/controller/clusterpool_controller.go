@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"time"
 
@@ -21,19 +22,37 @@ const (
 	workloadLabel          = "meridian.io/workload"
 	maxDeletesPerReconcile = 1 // gradual operations — one delete per cycle
 	defaultReservationTTL  = 4 * time.Hour
+
+	// DefaultMaxCreatesPerCycle bounds how many clusters one reconcile creates.
+	// A small batch fills a pool ~3x faster than one-at-a-time while still
+	// avoiding a burst of scheduling on a cold node pool.
+	DefaultMaxCreatesPerCycle = 3
+
+	suffixAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	suffixLength   = 8
 )
 
 // ClusterPoolController maintains the hot standby pool of Trino clusters.
-// Each reconcile cycle performs at most one create and one delete to avoid
-// overwhelming the Kubernetes scheduler (gradual operations).
+// Each reconcile cycle performs at most MaxCreatesPerCycle creates and one
+// delete to avoid overwhelming the Kubernetes scheduler (gradual operations).
 type ClusterPoolController struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// MaxCreatesPerCycle caps creates per reconcile. 0 means DefaultMaxCreatesPerCycle.
+	MaxCreatesPerCycle int
+
+	// APIReader reads straight from the API server (mgr.GetAPIReader()). It is
+	// used to recount clusters right before creating more, because the
+	// informer cache can lag behind clusters created in the previous cycle and
+	// would otherwise make the pool over-create. If nil, the cached client is used.
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=meridian.io,resources=clusterpools,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=meridian.io,resources=clusterpools/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=meridian.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=meridian.io,resources=clusterpools/finalizers;clusters/finalizers,verbs=update
 
 func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
@@ -143,12 +162,24 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
-	// 4. Scale up — create at most ONE cluster per reconcile (gradual operations).
-	//    This prevents thundering-herd on the Kubernetes scheduler and keeps
-	//    logs readable (one operation = one clear failure point).
-	if total < desired {
-		if err := r.createCluster(ctx, pool); err != nil {
-			log.Error(err, "failed to create cluster")
+	// 4. Scale up — create up to MaxCreatesPerCycle clusters per reconcile
+	//    (gradual operations: fast enough to fill a pool, bounded so a large
+	//    pool doesn't flood the scheduler at once).
+	if missing := int(desired - total); missing > 0 {
+		// Recount against the API server: the cache may not have seen
+		// clusters created moments ago.
+		if live, err := r.countLiveClusters(ctx, pool); err != nil {
+			log.Error(err, "failed to recount pool clusters; skipping scale-up this cycle")
+			missing = 0
+		} else {
+			missing = int(desired) - live
+		}
+		toCreate := min(max(missing, 0), r.maxCreates())
+		for i := 0; i < toCreate; i++ {
+			if err := r.createCluster(ctx, pool); err != nil {
+				log.Error(err, "failed to create cluster")
+				break
+			}
 		}
 	}
 
@@ -163,10 +194,10 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// 6. Update pool status.
-	pool.Status.ReadyReplicas    = int32(len(idle))
+	pool.Status.ReadyReplicas = int32(len(idle))
 	pool.Status.ReservedReplicas = int32(len(reserved))
-	pool.Status.PendingReplicas  = int32(len(pending))
-	pool.Status.FailedReplicas   = int32(len(failed))
+	pool.Status.PendingReplicas = int32(len(pending))
+	pool.Status.FailedReplicas = int32(len(failed))
 	pool.Status.DegradedReplicas = int32(len(degraded))
 	if err := r.Status().Update(ctx, pool); err != nil {
 		return ctrl.Result{}, err
@@ -248,13 +279,67 @@ func (r *ClusterPoolController) createCluster(ctx context.Context, pool *meridia
 			Workers: pool.Spec.Template.Workers,
 		},
 	}
-	return r.Create(ctx, cluster)
+	err := r.Create(ctx, cluster)
+	if apierrors.IsAlreadyExists(err) {
+		// Astronomically unlikely with 36^8 suffixes, but cheap to handle.
+		cluster.Name = fmt.Sprintf("%s-%s", pool.Name, generateSuffix())
+		err = r.Create(ctx, cluster)
+	}
+	return err
 }
 
+// countLiveClusters counts pool clusters that occupy a slot: not being
+// deleted and not Failed/Degraded (those are replaced, not counted).
+func (r *ClusterPoolController) countLiveClusters(ctx context.Context, pool *meridianv1alpha1.ClusterPool) (int, error) {
+	var reader client.Reader = r.Client
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	list := &meridianv1alpha1.ClusterList{}
+	if err := reader.List(ctx, list,
+		client.InNamespace(pool.Namespace),
+		client.MatchingLabels{poolLabel: pool.Name},
+	); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, c := range list.Items {
+		if !c.DeletionTimestamp.IsZero() {
+			continue
+		}
+		switch c.Status.Phase {
+		case meridianv1alpha1.ClusterPhaseFailed, meridianv1alpha1.ClusterPhaseDegraded:
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+func (r *ClusterPoolController) maxCreates() int {
+	if r.MaxCreatesPerCycle > 0 {
+		return r.MaxCreatesPerCycle
+	}
+	return DefaultMaxCreatesPerCycle
+}
+
+// generateSuffix returns a random DNS-safe suffix (8 chars, ~41 bits).
+// The old time-based suffix (UnixNano % 100000) collided when several
+// clusters were created in the same cycle.
 func generateSuffix() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+	b := make([]byte, suffixLength)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("crypto/rand failed: %v", err))
+	}
+	for i := range b {
+		b[i] = suffixAlphabet[int(b[i])%len(suffixAlphabet)]
+	}
+	return string(b)
 }
 
+// SetupWithManager registers the pool controller. Pools reconcile one at a
+// time (MaxConcurrentReconciles=1): a pool reconcile is cheap, and serial
+// processing keeps scale decisions simple to reason about.
 func (r *ClusterPoolController) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&meridianv1alpha1.ClusterPool{}).
