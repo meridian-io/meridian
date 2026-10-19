@@ -3,12 +3,14 @@ package controller
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
@@ -48,11 +50,11 @@ func poolCluster(pool *meridianv1alpha1.ClusterPool, suffix string, phase meridi
 	}
 }
 
-// TestClusterPoolController_ScaleUp verifies that the pool creates ONE cluster per reconcile
-// (gradual operations — prevents thundering-herd on the Kubernetes scheduler).
-// After N reconciles a pool of N clusters is reached.
+// TestClusterPoolController_ScaleUp verifies that the pool creates clusters in
+// bounded batches (DefaultMaxCreatesPerCycle per reconcile) until it reaches
+// the desired size, and never overshoots.
 func TestClusterPoolController_ScaleUp(t *testing.T) {
-	pool := newPool("test-pool", "meridian", 3)
+	pool := newPool("test-pool", "meridian", 7)
 	s := newTestScheme()
 
 	c := fake.NewClientBuilder().
@@ -64,16 +66,50 @@ func TestClusterPoolController_ScaleUp(t *testing.T) {
 	r := &ClusterPoolController{Client: c, Scheme: s}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-pool", Namespace: "meridian"}}
 
-	// Each reconcile creates exactly one cluster.
-	for i := 1; i <= 3; i++ {
+	for i, want := range []int{3, 6, 7, 7} {
 		if _, err := r.Reconcile(context.Background(), req); err != nil {
-			t.Fatalf("reconcile %d: unexpected error: %v", i, err)
+			t.Fatalf("reconcile %d: unexpected error: %v", i+1, err)
 		}
 		list := &meridianv1alpha1.ClusterList{}
 		_ = c.List(context.Background(), list)
-		if len(list.Items) != i {
-			t.Errorf("after reconcile %d: expected %d clusters, got %d", i, i, len(list.Items))
+		if len(list.Items) != want {
+			t.Errorf("after reconcile %d: expected %d clusters, got %d", i+1, want, len(list.Items))
 		}
+	}
+}
+
+// TestClusterPoolController_ScaleUpCustomBatch verifies MaxCreatesPerCycle is honored.
+func TestClusterPoolController_ScaleUpCustomBatch(t *testing.T) {
+	pool := newPool("test-pool", "meridian", 5)
+	s := newTestScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pool).WithStatusSubresource(pool).Build()
+
+	r := &ClusterPoolController{Client: c, Scheme: s, MaxCreatesPerCycle: 1}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-pool", Namespace: "meridian"}}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	list := &meridianv1alpha1.ClusterList{}
+	_ = c.List(context.Background(), list)
+	if len(list.Items) != 1 {
+		t.Errorf("MaxCreatesPerCycle=1 created %d clusters, want 1", len(list.Items))
+	}
+}
+
+// TestGenerateSuffix verifies suffixes are DNS-safe and don't collide, even
+// when many are generated at once (the old time-based suffix collided).
+func TestGenerateSuffix(t *testing.T) {
+	valid := regexp.MustCompile(`^[a-z0-9]{8}$`)
+	seen := map[string]bool{}
+	for i := 0; i < 10000; i++ {
+		sfx := generateSuffix()
+		if !valid.MatchString(sfx) {
+			t.Fatalf("suffix %q is not 8 lowercase alphanumerics", sfx)
+		}
+		if seen[sfx] {
+			t.Fatalf("duplicate suffix %q after %d generations", sfx, i)
+		}
+		seen[sfx] = true
 	}
 }
 
@@ -174,5 +210,43 @@ func TestClusterPoolController_NoChangeAtDesired(t *testing.T) {
 	_ = c.List(context.Background(), list)
 	if len(list.Items) != 2 {
 		t.Errorf("expected 2 clusters unchanged, got %d", len(list.Items))
+	}
+}
+
+// staleClient serves List from a frozen snapshot, like an informer cache that
+// hasn't seen recent creates yet. Writes go to the real client.
+type staleClient struct {
+	client.Client
+	snapshot *meridianv1alpha1.ClusterList
+}
+
+func (s *staleClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if l, ok := list.(*meridianv1alpha1.ClusterList); ok && s.snapshot != nil {
+		s.snapshot.DeepCopyInto(l)
+		return nil
+	}
+	return s.Client.List(ctx, list, opts...)
+}
+
+// TestClusterPoolController_NoOvershootWithStaleCache reproduces the QE
+// finding: with a stale cache, batch creation must not exceed desired, because
+// the pool recounts against the API server before creating.
+func TestClusterPoolController_NoOvershootWithStaleCache(t *testing.T) {
+	pool := newPool("test-pool", "meridian", 3)
+	s := newTestScheme()
+	real := fake.NewClientBuilder().WithScheme(s).WithObjects(pool).WithStatusSubresource(pool).Build()
+	stale := &staleClient{Client: real, snapshot: &meridianv1alpha1.ClusterList{}} // cache always looks empty
+
+	r := &ClusterPoolController{Client: stale, Scheme: s, APIReader: real}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-pool", Namespace: "meridian"}}
+	for i := 0; i < 3; i++ {
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := &meridianv1alpha1.ClusterList{}
+	_ = real.List(context.Background(), list)
+	if len(list.Items) != 3 {
+		t.Fatalf("stale cache caused %d clusters, want exactly 3", len(list.Items))
 	}
 }

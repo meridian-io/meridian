@@ -12,7 +12,9 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -29,7 +31,7 @@ var scheme = runtime.NewScheme()
 func buildCredentialProvider(
 	ctx context.Context,
 	providerName string,
-	c client.Client,
+	c client.Reader,
 	namespace string,
 	vaultAddr, vaultRole, vaultMount string,
 	awsRegion string,
@@ -74,7 +76,6 @@ func buildCredentialProvider(
 		caches[p.Name()] = credentials.NewSecretCache(p, credentials.DefaultTTL)
 	}
 
-	_ = time.Second // ensure time import is used (DefaultTTL is a time.Duration constant)
 	return providers, caches, nil
 }
 
@@ -99,6 +100,9 @@ func main() {
 		vaultRole          string
 		vaultMount         string
 		awsRegion          string
+
+		clusterConcurrency int
+		poolMaxCreates     int
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081", "Address for the metrics endpoint.")
@@ -118,7 +122,16 @@ func main() {
 		"Vault KV v2 mount path (used when --credential-provider=vault).")
 	flag.StringVar(&awsRegion, "aws-region", "",
 		"AWS region (required when --credential-provider=aws-secrets-manager).")
+	flag.IntVar(&clusterConcurrency, "cluster-concurrency", controller.DefaultClusterConcurrency,
+		"Number of Cluster resources reconciled in parallel.")
+	flag.IntVar(&poolMaxCreates, "pool-max-creates-per-cycle", controller.DefaultMaxCreatesPerCycle,
+		"Maximum clusters a ClusterPool creates per reconcile cycle.")
 	flag.Parse()
+
+	if clusterConcurrency < 1 || poolMaxCreates < 1 {
+		fmt.Fprintln(os.Stderr, "--cluster-concurrency and --pool-max-creates-per-cycle must be at least 1")
+		os.Exit(1)
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{})))
 	log := ctrl.Log.WithName("main")
@@ -156,7 +169,7 @@ func main() {
 	}
 
 	// Build credential provider and cache based on --credential-provider flag.
-	providers, caches, err := buildCredentialProvider(ctx, credentialProvider, mgr.GetClient(), namespace,
+	providers, caches, err := buildCredentialProvider(ctx, credentialProvider, mgr.GetAPIReader(), namespace,
 		vaultAddr, vaultRole, vaultMount, awsRegion)
 	if err != nil {
 		log.Error(err, "failed to initialise credential provider", "provider", credentialProvider)
@@ -165,19 +178,22 @@ func main() {
 	log.Info("credential provider initialised", "provider", credentialProvider)
 
 	if err = (&controller.ClusterController{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Providers: providers,
-		Rotator:   credentials.NewRotator(),
-		Cache:     caches,
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Providers:               providers,
+		Rotator:                 credentials.NewRotator(),
+		Cache:                   caches,
+		MaxConcurrentReconciles: clusterConcurrency,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "failed to setup ClusterController")
 		os.Exit(1)
 	}
 
 	if err = (&controller.ClusterPoolController{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		MaxCreatesPerCycle: poolMaxCreates,
+		APIReader:          mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "failed to setup ClusterPoolController")
 		os.Exit(1)
@@ -191,20 +207,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := mgr.AddHealthzCheck("healthz", func(_ *http.Request) error { return nil }); err != nil {
+	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		log.Error(err, "failed to add healthz check")
 		os.Exit(1)
 	}
+	// Ready only once the informer caches have synced; before that the
+	// operator would act on an empty view of the cluster.
+	if err := mgr.AddReadyzCheck("readyz", cacheSyncedCheck(mgr.GetCache())); err != nil {
+		log.Error(err, "failed to add readyz check")
+		os.Exit(1)
+	}
 
-	// Start the mTLS reservation REST API if configured.
+	// Run the mTLS reservation REST API under the manager so it shuts down
+	// gracefully with the operator.
 	if restAddr != "" && tlsCert != "" && tlsKey != "" {
 		srv := rest.NewServer(restAddr, mgr.GetClient(), namespace, tlsCA)
-		go func() {
-			log.Info("starting REST API", "addr", restAddr)
-			if err := srv.ListenAndServeTLS(tlsCert, tlsKey); err != nil && err != http.ErrServerClosed {
-				log.Error(err, "REST API exited")
-			}
-		}()
+		if err := mgr.Add(&rest.Runnable{Server: srv, CertFile: tlsCert, KeyFile: tlsKey}); err != nil {
+			log.Error(err, "failed to register REST API")
+			os.Exit(1)
+		}
+		log.Info("REST API enabled", "addr", restAddr)
 	} else {
 		log.Info("REST API disabled — set --rest-addr, --tls-cert, --tls-key to enable")
 	}
@@ -213,5 +235,17 @@ func main() {
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		log.Error(err, "operator exited with error")
 		os.Exit(1)
+	}
+}
+
+// cacheSyncedCheck reports ready once the manager's informer caches are synced.
+func cacheSyncedCheck(c cache.Cache) healthz.Checker {
+	return func(req *http.Request) error {
+		ctx, cancel := context.WithTimeout(req.Context(), time.Second)
+		defer cancel()
+		if !c.WaitForCacheSync(ctx) {
+			return fmt.Errorf("informer caches not synced")
+		}
+		return nil
 	}
 }

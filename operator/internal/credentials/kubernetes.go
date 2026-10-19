@@ -34,12 +34,14 @@ import (
 //
 //	meridian.io/rotate-credentials: "kubernetes/mysql_catalog/mysql-credentials"
 type KubernetesProvider struct {
-	client    client.Client
+	client    client.Reader
 	namespace string
 }
 
 // NewKubernetesProvider creates a provider that reads Secrets from the given namespace.
-func NewKubernetesProvider(c client.Client, namespace string) *KubernetesProvider {
+// Pass an uncached reader (mgr.GetAPIReader()): a cached client would start a
+// watch on every Secret and keep them all in operator memory.
+func NewKubernetesProvider(c client.Reader, namespace string) *KubernetesProvider {
 	return &KubernetesProvider{client: c, namespace: namespace}
 }
 

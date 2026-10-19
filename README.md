@@ -2,66 +2,51 @@
 
 **The open-source Trino control plane and MCP server for Kubernetes.**
 
-**[getmeridian.dev](https://getmeridian.dev)** · **v1.1**
+**[getmeridian.dev](https://getmeridian.dev)** · **Latest release: [v1.2](https://github.com/meridian-io/meridian/releases/tag/v1.2)**
 
-Trino clusters take 30–90 seconds to provision. Meridian eliminates that wait — a hot standby pool keeps pre-provisioned clusters idle and ready, reserved in zero seconds. No cold starts for CI/CD jobs, batch workloads, or multi-tenant platforms.
+Trino clusters take 30–90 seconds to provision. Meridian eliminates that wait: a hot standby pool keeps pre-provisioned clusters idle and ready, so a reservation completes in zero seconds. No cold starts for CI/CD jobs, batch workloads, or multi-tenant platforms.
 
-Meridian is two things in one: a **Kubernetes operator** that manages the full cluster lifecycle (`Empty → Pending → Idle → Reserved`), and an **MCP server** with 19 tools so Claude, Cursor, or any MCP client can provision clusters, add catalogs, rotate credentials, and run queries through natural language.
+Meridian has two parts:
 
-The platform large data teams built internally. Now open source.
+- A **Kubernetes operator** that manages the full cluster lifecycle (`Empty → Pending → Idle → Reserved`) and keeps a warm pool of clusters.
+- An **MCP server** that lets Claude, Cursor, or any MCP client explore catalogs, run queries, and reserve clusters in natural language. It is secure by default: read-only queries, a token required for remote access, and config-changing tools off unless you enable them.
 
 ---
 
-## MCP Server — Start Here
+## MCP Server
 
-The `meridian` binary is a standalone MCP server that works against **any Trino deployment on Kubernetes**. Install the operator for the full hot standby pool experience; the MCP server is useful on day one without it.
+The `meridian` binary is an MCP server for Trino clusters managed by Meridian. It needs the Meridian CRDs in your Kubernetes cluster. To use an existing Trino deployment, register it as a `Cluster` resource. [Local Development](#local-development) shows how.
 
 ### Install
 
-**Binary (all platforms):**
+**Binary** (macOS arm64 shown; Linux and Windows builds are on the [releases page](https://github.com/meridian-io/meridian/releases)):
 ```bash
-# macOS arm64
-curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.1/trino-mcp-server_v1.1_darwin_arm64.tar.gz
+curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.2/trino-mcp-server_1.2_darwin_arm64.tar.gz
 tar xzf meridian.tar.gz && sudo mv meridian /usr/local/bin/
 ```
 
 **Docker:**
 ```bash
-docker pull ghcr.io/meridian-io/trino-mcp-server:v1.1
+docker pull ghcr.io/meridian-io/trino-mcp-server:v1.2
 ```
 
 ### Run
 
 ```bash
-# stdio — for Claude Desktop / local MCP clients
+# stdio: for Claude Desktop and other local MCP clients
 meridian --transport stdio --namespace meridian
 
-# SSE — for remote / team use (Cursor, Claude API). A bearer token is required.
+# SSE: for remote or team use. A bearer token is required.
 export MERIDIAN_MCP_TOKEN=$(openssl rand -hex 32)
 meridian --transport sse --addr :8080 --namespace meridian
 
-# In-cluster (reads service account token automatically; token from a mounted Secret)
+# In-cluster: uses the pod's service account; token from a mounted Secret
 meridian --transport sse --addr :8080 --auth-token-file /etc/meridian/token
 ```
 
-### Security defaults
-
-Meridian is safe by default. Each default can be relaxed with a flag:
-
-| Default | Why | To change |
-|---|---|---|
-| SSE requires a bearer token (`Authorization: Bearer <token>`, min 16 chars) | Without it, anyone who can reach the port can run queries | `MERIDIAN_MCP_TOKEN` or `--auth-token-file`. `--insecure-no-auth` exists for local testing only |
-| `execute_query` is **read-only** (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, VALUES, TABLE) | An AI client shouldn't be able to `DROP` or `DELETE` by accident | `--allow-writes` |
-| 12 core tools are on; 7 tools that change cluster or catalog config are **off** | Smaller blast radius | `--enable-tools=scale_pool,add_catalog` or `--enable-tools=all` |
-| `output_file` writes only into `--output-dir` (default: per-user cache dir, e.g. `~/.cache/meridian/exports`), and is disabled in SSE mode | Remote callers must not write files onto the server | `--output-dir` |
-
-The read-only check is a guardrail for AI clients. Use Trino access control as the real security boundary. For example, connector table functions such as `system.query(...)` send SQL to the underlying database and are not inspected by Meridian.
-
-Other flags: `--base-url` (public URL behind a proxy), `--cache-max-entries` (default 1000), `--log-format json|text`. Health endpoints in SSE mode: `/healthz` (process alive) and `/readyz` (Kubernetes API reachable). Neither requires a token.
-
 ### Connect to Claude Desktop
 
-Add to `~/.config/claude/claude_desktop_config.json`:
+Add to `claude_desktop_config.json`. On macOS it's in `~/Library/Application Support/Claude/`, and on Windows in `%APPDATA%\Claude\`:
 
 ```json
 {
@@ -74,7 +59,22 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 }
 ```
 
-### Available MCP Tools
+### Security Defaults
+
+Each default can be relaxed with a flag:
+
+| Default | Why | To change |
+|---|---|---|
+| SSE requires a bearer token (`Authorization: Bearer <token>`, min 16 chars) | Without it, anyone who can reach the port can run queries | `MERIDIAN_MCP_TOKEN` or `--auth-token-file`. `--insecure-no-auth` is for local testing only |
+| `execute_query` is **read-only** (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, VALUES, TABLE) | An AI client shouldn't be able to `DROP` or `DELETE` by accident | `--allow-writes` |
+| 12 core tools are on. The 7 tools that change cluster or catalog config are **off** | Smaller blast radius | `--enable-tools=scale_pool,add_catalog` or `--enable-tools=all` |
+| `output_file` writes only into `--output-dir` (default: a per-user cache dir, e.g. `~/.cache/meridian/exports`) and is disabled in SSE mode | Remote callers must not write files onto the server | `--output-dir` |
+
+The read-only check is a guardrail for AI clients. Trino access control remains the real security boundary. For example, connector table functions such as `system.query(...)` send SQL to the underlying database and are not inspected by Meridian.
+
+Other flags: `--base-url` (public URL behind a proxy), `--cache-max-entries` (default 1000), and `--log-format json|text`. In SSE mode, `/healthz` reports the process is alive and `/readyz` reports the Kubernetes API is reachable. Neither requires a token.
+
+### Tools
 
 **Core tools (on by default)**
 
@@ -83,13 +83,13 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | `list_pools` | List all ClusterPools with current state | — |
 | `list_clusters` | List all clusters with phase, health, coordinator URL | — |
 | `get_cluster` | Get full details of a specific cluster | — |
-| `reserve_cluster` | Claim an idle cluster for a client. Idempotent and safe under concurrency: two clients never get the same cluster | — |
+| `reserve_cluster` | Claim an idle cluster by name or workload. Idempotent and safe under concurrency: two clients never get the same cluster | — |
 | `release_cluster` | Return a cluster to the idle pool. Pass `client_id` to release only your own reservation | — |
 | `list_catalogs` | List all catalogs registered in a cluster | 5 min |
 | `list_schemas` | List schemas in a catalog | 5 min |
 | `list_tables` | List tables in a catalog schema | 5 min |
 | `get_table_schema` | Get column names and data types for a table | 5 min |
-| `execute_query` | Run SQL (read-only by default) and return results as a table. Tagged with `mcp_query_id`. Max 10,000 rows | none (opt-in via `ttl` param) |
+| `execute_query` | Run SQL (read-only by default) and return results as a table. Max 10,000 rows | none (opt-in via `ttl`) |
 | `explain_query` | Return the Trino execution plan without running the query | 5 min |
 | `get_audit_log` | Fetch cluster lifecycle and management events | — |
 
@@ -100,103 +100,87 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | `create_cluster` | Provision a cluster outside a pool |
 | `delete_cluster` | Tear down a cluster |
 | `scale_pool` | Set desired replica count on a ClusterPool |
-| `add_catalog` | Push a new catalog to a cluster, no restart (invalidates the catalog cache) |
-| `remove_catalog` | Remove a catalog, no restart (invalidates the catalog cache) |
-| `rotate_credentials` | Trigger a Vault/ASM credential refresh |
+| `add_catalog` | Add a catalog to a running cluster, no restart |
+| `remove_catalog` | Remove a catalog from a running cluster, no restart |
+| `rotate_credentials` | Trigger a credential refresh from Kubernetes Secrets, Vault, or AWS Secrets Manager |
 | `promote_environment` | Copy a pool config between namespaces (dev → staging → prod) |
 
 ### Query Result Caching
 
-Meridian caches Trino query results in memory to avoid redundant round-trips for repeated calls within the same session.
+Results are cached in memory to avoid repeated round-trips to Trino:
 
-| Tool | Default TTL | Rationale |
-|---|---|---|
-| `execute_query` | **none** | Data changes must be visible immediately — opt in with `ttl=N` for static data |
-| `list_catalogs` | 5 minutes | Catalog list rarely changes |
-| `list_schemas` | 5 minutes | Schema list rarely changes |
-| `list_tables` | 5 minutes | Table list rarely changes |
-| `get_table_schema` | 5 minutes | Column metadata rarely changes |
-
-**How it works:**
-
-1. First call → cache miss → query hits Trino → result stored with expiry timestamp
-2. Same call within TTL → cache hit → result returned instantly, marked `[cache hit]`
-3. After TTL expires → next call hits Trino again and refreshes the cache
-4. `add_catalog` / `remove_catalog` immediately invalidate the catalog cache so `list_catalogs` always reflects the current state
-
-**Singleflight:** If two identical queries arrive simultaneously (e.g. Claude calling the same tool twice in one turn), only one hits Trino. The second waits and is served from cache once the first completes.
-
-**Opt-in caching for `execute_query`:** Pass `ttl=N` when querying static or reference data:
-
-```
-Run SELECT * FROM mysql_testdb.testdb.orders on trino-local with ttl=60
-```
-
-**Cache key:** SHA-256 hash of `(coordinatorURL, max_rows, sql)`, prefixed by coordinator. A result cut off at `max_rows` is never served to a request that asked for more rows. The cache holds at most `--cache-max-entries` results (default 1000).
-
-**Edge case — `add_catalog`:** When you add or remove a catalog via MCP, the cache for that coordinator is immediately invalidated. `list_catalogs` called right after will always hit Trino and return the current state — no stale data.
+- **Metadata tools** (`list_catalogs`, `list_schemas`, `list_tables`, `get_table_schema`, `explain_query`) cache for 5 minutes.
+- **`execute_query`** is not cached by default, so data changes are visible immediately. Pass `ttl=N` to cache static or reference data for N seconds.
+- **Cache hits** are marked `[cache hit]`.
+- **`add_catalog` / `remove_catalog`** clear that cluster's cache, so `list_catalogs` reflects the change right away.
+- **Identical concurrent queries** run once (singleflight). The second caller gets the first caller's result.
+- **Cache key:** the cluster, `max_rows`, and the SQL. A result cut off at `max_rows` is never served to a request that asked for more rows.
+- **Size:** at most `--cache-max-entries` results (default 1000).
 
 ### Query Tagging
 
-Every SQL statement sent to Trino is automatically tagged with a unique `mcp_query_id`:
+Every statement sent to Trino is tagged with a unique `mcp_query_id`, as a SQL comment:
 
 ```sql
 SELECT * FROM mysql_testdb.testdb.orders
 -- mcp_query_id=3f2a1b4c-e8d7-4a9b-b1c2-0f5e6d7a8b9c
 ```
 
-The tag appears as a SQL comment, so Trino executes it normally. The `query_id` is shown at the top of every result:
+The `query_id` is shown at the top of every result. Use it to find the exact execution in the Trino UI (`http://<coordinator>:8080/ui`) or query history. Cache hits don't reach Trino, so they aren't tagged.
 
-```
-query_id: 3f2a1b4c-e8d7-4a9b-b1c2-0f5e6d7a8b9c
-| name        |
-|-------------|
-| 55555577    |
-| 76y56       |
+### CSV Export
 
-(2 rows)
-```
-
-Use it to look up the exact execution in the Trino UI (`http://<coordinator>:8080/ui`) or query history — useful when debugging slow queries or unexpected results.
-
-Note: tags are applied only on fresh Trino calls. Cache hits (`[cache hit]`) skip tagging since the query never reaches Trino again.
-
-### CSV File Export
-
-For large result sets that would overflow the context window, use `output_file` to write results as CSV instead of returning them inline. Pass a plain file name. It is written into `--output-dir` (default: per-user cache dir, e.g. `~/.cache/meridian/exports`). Directories and `..` are rejected, and the option is disabled in SSE mode.
+For large results, pass `output_file` with a plain file name. The rows are written as CSV into `--output-dir`, and only a summary goes back to the AI client:
 
 ```
 Run SELECT * FROM mysql_testdb.testdb.orders on trino-local with output_file=orders.csv
 ```
-
-Returns:
 ```
 Results written to /home/you/.cache/meridian/exports/orders.csv (1042 rows, 8 columns)
 query_id: 3f2a1b4c-...
 ```
 
-The file includes a header row followed by all data rows. The full table is never sent to the LLM — only the summary.
+Directories and `..` are rejected, and CSV export is disabled in SSE mode.
 
 ---
 
-## Architecture
+## Kubernetes Operator
+
+The operator runs three controllers in one binary:
+
+| Controller | Responsibility |
+|---|---|
+| `ClusterController` | Lifecycle per cluster. Creates the coordinator and worker Deployments and the coordinator Service, health-gates the move to `Idle`, marks a cluster `Degraded` if its coordinator dies while idle, and recovers evicted coordinators. |
+| `ClusterPoolController` | Keeps the warm pool at `spec.replicas`. Creates up to 3 clusters per cycle and deletes the oldest idle cluster when over-provisioned (one per cycle). Replaces `Failed` and `Degraded` clusters, releases reservations older than `reservationTtl`, rolls clusters onto a new image, and recycles clusters older than `maxClusterAge`. |
+| `ClusterPoolAutoscalerController` | Adjusts `ClusterPool.spec.replicas` from utilization (`reserved / total`). Scales up at ≥ threshold (default 70%) and down below threshold × 0.75 (hysteresis). |
+
+### Cluster Lifecycle
+
+```
+Empty → Pending → Idle ⇄ Reserved
+           │        │
+           ▼        ▼
+        Failed   Degraded   (the pool replaces both)
+```
+
+### Architecture
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│                   Project Meridian                    │
+│                       Meridian                       │
 │                                                      │
-│  ┌────────────┐  ┌─────────────┐  ┌───────────────┐  │
-│  │  Web UI    │  │  REST API   │  │  MCP Server   │  │
-│  │  Next.js   │  │  Go/mTLS    │  │  Go · 19 tools│  │
-│  └────────────┘  └──────┬──────┘  └──────┬────────┘  │
-│                         │                │           │
-│                ┌────────▼────────────────▼──────┐    │
-│                │       Kubernetes API Server     │    │
-│                └────────┬────────────────────────┘    │
-│       ┌─────────────────┼──────────────┐             │
-│       ▼                 ▼              ▼             │
-│  ClusterController  ClusterPool   ClusterPool        │
-│                     Controller    Autoscaler         │
+│      ┌─────────────┐          ┌───────────────┐      │
+│      │  REST API   │          │  MCP Server   │      │
+│      │  Go / mTLS  │          │  Go           │      │
+│      └──────┬──────┘          └──────┬────────┘      │
+│             │                        │               │
+│      ┌──────▼────────────────────────▼──────┐        │
+│      │        Kubernetes API Server         │        │
+│      └──────┬───────────────────────────────┘        │
+│       ┌─────┼─────────────────┐                      │
+│       ▼     ▼                 ▼                      │
+│  Cluster    ClusterPool    ClusterPool               │
+│  Controller Controller     Autoscaler                │
 └──────────────────────────────────────────────────────┘
                           │
            ┌──────────────┼──────────────┐
@@ -204,71 +188,74 @@ The file includes a header row followed by all data rows. The full table is neve
       Cluster(Idle)  Cluster(Reserved)  Cluster(Pending)
 ```
 
-## Cluster Lifecycle
+### CRDs (`meridian.io/v1alpha1`)
 
-```
-Empty → Pending → Idle → Reserved
-                    ↓
-                  Failed
-```
-
-## Components
-
-| Directory | Language | Description |
-|---|---|---|
-| `mcp/` | Go | MCP server — **ships first**, standalone binary |
-| `operator/` | Go | Kubernetes operator — controllers, CRDs, REST API |
-| `ui/` | Next.js | Web management dashboard |
-| `charts/` | Helm | One-command install |
-| `config/` | YAML | CRD manifests |
-| `docs/` | HTML | Architecture and API documentation |
-
-## Kubernetes Operator
-
-The operator manages the full Trino cluster lifecycle on Kubernetes. Three controllers run in a single binary:
-
-| Controller | Responsibility |
+| Kind | Purpose |
 |---|---|
-| `ClusterController` | Lifecycle per cluster: `Empty → Pending → Idle → Reserved → Failed`. Creates coordinator Deployment, worker Deployment, and coordinator Service. Health-gates transition to Idle. Handles coordinator eviction recovery. |
-| `ClusterPoolController` | Maintains hot standby pool: creates clusters to reach `spec.replicas`, deletes oldest idle cluster when over-provisioned (one per cycle), purges failed clusters immediately. |
-| `ClusterPoolAutoscalerController` | Adjusts `ClusterPool.spec.replicas` based on utilization (`reserved / total`). Scales up at ≥ threshold (default 70%), scales down at < threshold × 0.75 (hysteresis). |
+| `Cluster` | A single Trino cluster (coordinator + workers) |
+| `ClusterPool` | A hot standby pool of N clusters |
+| `ClusterPoolAutoscaler` | Scales a pool by reservation utilization |
 
-### Docker Images
+### Pod Sizing (Profiles)
 
-```bash
-# MCP server — for Claude Desktop, CI/CD, AI agents
-docker pull ghcr.io/meridian-io/trino-mcp-server:v1.1
+Every Trino pod gets CPU and memory from its cluster's profile. The memory request equals the limit, so pods aren't OOM-killed by overcommit. CPU has a request but no limit, because CPU limits throttle the JVM.
 
-# Kubernetes operator — control plane
-docker pull ghcr.io/meridian-io/trino-operator:v1.1
+| Profile | JVM heap | Pod memory | CPU request |
+|---|---|---|---|
+| `default` | 4G | 5Gi | 1 |
+| `medium` | 8G | 10Gi | 2 |
+| `large` | 16G | 20Gi | 4 |
+
+Custom profiles live in a ConfigMap named `meridian-profile-<name>`. All keys are optional:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: meridian-profile-analytics
+  namespace: meridian
+data:
+  jvmHeap: "24G"            # pod memory defaults to 125% of the heap if not set
+  queryMaxMemory: "48GB"
+  queryMaxMemoryPerNode: "6GB"
+  memory: "30Gi"            # both roles
+  cpu: "6"
+  coordinatorMemory: "16Gi" # role-specific overrides
+  workerCPU: "8"
 ```
 
-### Build and Run Locally
+Sizes apply to newly created clusters. Existing clusters pick them up when the pool replaces them (image upgrade or `maxClusterAge`).
+
+### Operator Flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--namespace` | `meridian` | Namespace for leader election, the REST API, and credential Secrets |
+| `--cluster-concurrency` | `5` | Clusters reconciled in parallel |
+| `--pool-max-creates-per-cycle` | `3` | Clusters a pool creates per reconcile cycle |
+| `--health-probe-bind-address` | `:8082` | `/healthz` (process alive) and `/readyz` (caches synced) |
+| `--metrics-bind-address` | `:8081` | Prometheus metrics |
+| `--rest-addr`, `--tls-cert`, `--tls-key`, `--tls-ca` | — | mTLS reservation REST API. Shuts down gracefully with the operator |
+| `--credential-provider` | `kubernetes` | Secret backend for credential rotation: `kubernetes`, `vault`, or `aws-secrets-manager` |
+
+### Run the Operator
 
 ```bash
-# Build
-cd operator && go build -o ../bin/meridian-operator .
+docker pull ghcr.io/meridian-io/trino-operator:v1.2
 
-# Apply CRDs
-kubectl apply -f operator/config/crd/bases/
-
-# Run (reads ~/.kube/config by default)
+# or build and run from source against your current kubeconfig
+make install   # apply CRDs
+make build     # → bin/meridian-operator
 ./bin/meridian-operator --namespace meridian
 
-# With REST API enabled
+# with the mTLS REST API
 ./bin/meridian-operator --namespace meridian \
-  --rest-addr :8443 \
-  --tls-cert /path/to/cert.pem \
-  --tls-key /path/to/key.pem
-```
-
-### Run Tests
-
-```bash
-cd operator && go test ./internal/...
+  --rest-addr :8443 --tls-cert cert.pem --tls-key key.pem --tls-ca ca.pem
 ```
 
 ### Reserve a Cluster (REST API)
+
+The client identity comes from the mTLS client certificate's CN.
 
 ```bash
 curl -X POST https://meridian:8443/api/v1/clusters/reservations \
@@ -276,54 +263,35 @@ curl -X POST https://meridian:8443/api/v1/clusters/reservations \
   -H "Content-Type: application/json" \
   -d '{"reservationId": "job-123", "profile": "default"}'
 ```
-
-Returns:
 ```json
 {"clusterName": "pool-abc123", "coordinatorUrl": "http://pool-abc123-coordinator.meridian.svc.cluster.local:8080", "reservedAt": "2026-03-01T10:00:00Z"}
 ```
 
-### Install via Helm (Phase 6)
+---
 
-```bash
-helm install meridian charts/meridian \
-  --namespace meridian \
-  --create-namespace
-```
+## Local Development
 
-## Local Development & E2E Testing
+This setup runs Trino and MySQL in Docker and a local kind Kubernetes cluster, so you can test every tool end to end without cloud infrastructure.
 
-This setup runs a real Trino cluster and MySQL database locally using Docker, then connects the MCP server to it via a kind Kubernetes cluster. You can test every catalog and query tool end-to-end without any cloud infrastructure.
-
-### Prerequisites
-
-```bash
-# Docker Desktop — https://www.docker.com/products/docker-desktop
-# Then install kind and kubectl
-brew install kind kubectl
-```
+**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop), then `brew install kind kubectl`.
 
 ### 1. Start Trino and MySQL
 
 ```bash
-cd hack
-docker compose up -d
+cd hack && docker compose up -d
 ```
-
-This starts three containers:
 
 | Container | Port | What it is |
 |---|---|---|
-| `meridian-trino` | `8080` | Trino 435 with `catalog.management=dynamic` enabled |
-| `meridian-mysql` | `3306` | MySQL 8.0 with a `testdb` database |
+| `meridian-trino` | `8080` | Trino 435 with `catalog.management=dynamic` |
+| `meridian-mysql` | `3306` | MySQL 8.0 with a `testdb` database (user `root`, password `trino_test`) |
 | `meridian-adminer` | `8081` | Adminer UI for browsing MySQL |
 
-Wait for Trino to be ready:
+Wait until Trino is ready:
 
 ```bash
 curl -sf http://localhost:8080/v1/info | python3 -c "import sys,json; print('ready' if not json.load(sys.stdin).get('starting') else 'starting')"
 ```
-
-MySQL credentials: host `localhost`, port `3306`, user `root`, password `trino_test`, database `testdb`.
 
 ### 2. Create a Local Kubernetes Cluster
 
@@ -331,178 +299,100 @@ MySQL credentials: host `localhost`, port `3306`, user `root`, password `trino_t
 ./hack/setup-local.sh
 ```
 
-This creates a kind cluster named `meridian-dev`, applies the Meridian CRDs, seeds test Cluster fixtures, and creates a `trino-local` Cluster CR that points to the Docker Compose Trino at `http://localhost:8080`.
+This creates a kind cluster named `meridian-dev`, applies the CRDs, seeds test clusters, and registers the Docker Trino as a `Cluster` named `trino-local` (coordinator `http://localhost:8080`).
 
-### 3. Build and Run the MCP Server
+### 3. Build and Connect the MCP Server
 
 ```bash
-cd mcp && go build -o ../bin/meridian ./cmd/meridian-mcp/
-
-# Run locally
-../bin/meridian --transport stdio \
-  --namespace meridian \
-  --kubeconfig ~/.kube/config
+make build-mcp   # → bin/meridian
 ```
 
-### 4. Connect to Claude Desktop
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
+Point Claude Desktop at the local build. The catalog tools are enabled here because the walkthrough below adds a catalog:
 
 ```json
 {
   "mcpServers": {
     "meridian": {
-      "command": "/path/to/meridian",
-      "args": ["--transport", "stdio", "--namespace", "meridian", "--kubeconfig", "/Users/you/.kube/config"]
+      "command": "/path/to/meridian/bin/meridian",
+      "args": ["--transport", "stdio", "--namespace", "meridian",
+               "--kubeconfig", "/Users/you/.kube/config",
+               "--enable-tools", "add_catalog,remove_catalog"]
     }
   }
 }
 ```
 
-Restart Claude Desktop. You should see the Meridian tools available.
+Restart Claude Desktop to load the tools.
 
-### 5. E2E Test — Add a MySQL Catalog and Query It
+> **Note:** When adding the MySQL catalog, use `mysql:3306` in the connection URL, not `localhost:3306`. Trino runs inside Docker and reaches MySQL by its Docker network hostname.
 
-With Claude Desktop connected, test the full flow:
-
-**Step 1 — Add MySQL as a catalog:**
-> Add a catalog called `mysql_testdb` to the cluster named `trino-local` with these properties:
-> ```
-> connector.name=mysql
-> connection-url=jdbc:mysql://mysql:3306
-> connection-user=root
-> connection-password=trino_test
-> ```
-
-**Step 2 — Browse the catalog:**
-> List the schemas in the `mysql_testdb` catalog on `trino-local`
-
-**Step 3 — Query the data:**
-> Run `SHOW TABLES FROM mysql_testdb.testdb` on `trino-local`
-
-**Verify directly in Trino:**
-```bash
-docker exec meridian-trino trino --execute "SHOW CATALOGS"
-docker exec meridian-trino trino --execute "SHOW SCHEMAS FROM mysql_testdb"
-```
-
-> **Note:** When adding a MySQL catalog, use `mysql:3306` as the connection URL (not `localhost:3306`). Trino runs inside Docker and reaches MySQL via the internal Docker network hostname `mysql`.
-
----
+### 4. Build and Test
 
 ```bash
-# MCP server
-cd mcp && go build -o ../bin/meridian ./cmd/meridian-mcp
-
-# Kubernetes operator
-cd operator && go build -o ../bin/meridian-operator .
-
-# Or use Make
-make build       # operator
-make build-mcp   # MCP server
-make test        # all tests
+make build       # operator → bin/meridian-operator
+make build-mcp   # MCP server → bin/meridian
+make test-all    # all tests (operator + MCP)
+make manifests   # regenerate CRDs and RBAC after changing API types
 ```
 
-## Manual Testing Use Cases
+## Manual Test Cases
 
-The following test cases cover all working tools end-to-end. Run them in Claude Desktop with the local dev environment running (`docker compose up -d` + `./hack/setup-local.sh`).
-
-**Reference table used in tests:**
-
-| Database | Table | Rows | Column |
-|---|---|---|---|
-| MySQL `testdb` | `test` | 2 | `name` (char 11) |
-
----
+Run these in Claude Desktop with the local environment running.
 
 | # | What to say to Claude | Expected result |
 |---|---|---|
-| 1 | `List all clusters in the meridian namespace` | Shows `trino-local`, `trino-idle-01`, `trino-idle-02`, `trino-pending-01`, `trino-reserved-01` with phase and health |
-| 2 | `Get details for the cluster named trino-local in the meridian namespace` | Shows coordinator URL `http://localhost:8080`, phase, health status |
-| 3 | `Add a catalog called mysql_testdb to trino-local with connector.name=mysql, connection-url=jdbc:mysql://mysql:3306, connection-user=root, connection-password=trino_test` | Returns `Catalog "mysql_testdb" added to cluster "trino-local"` |
-| 4 | `List all catalogs on trino-local` | Shows `mysql_testdb`, `system`, `tpch` — result is fresh (cache was busted by add_catalog) |
-| 5 | `List all catalogs on trino-local again` (same conversation) | Same result with `[cache hit]` — served from 5-minute cache |
-| 6 | `List schemas in the mysql_testdb catalog on trino-local` | Shows `information_schema`, `testdb` |
-| 7 | `List tables in mysql_testdb.testdb on trino-local` | Shows `orders`, `test` (or whatever tables exist) |
-| 8 | `Show me the schema for the test table in mysql_testdb.testdb on trino-local` | Shows column `name` with type `char(11)` |
-| 9 | `Run SELECT * FROM mysql_testdb.testdb.test on trino-local` | Returns 2 rows: `55555577`, `76y56` — no `[cache hit]` (execute_query has no cache by default) |
-| 10 | `Run that same query again` (same conversation) | Returns 2 rows again — still no `[cache hit]` (correct — data may have changed) |
-| 11 | `Run SELECT * FROM mysql_testdb.testdb.test on trino-local with ttl=60` | Returns 2 rows, no `[cache hit]` on first call |
-| 12 | `Run that same query again` (same conversation, within 60s) | Returns 2 rows with `[cache hit]` — opt-in cache is working |
-| 13 | `Run SELECT * FROM mysql_testdb.testdb.test on trino-local` | Result includes `query_id: <uuid>` on the first line — query tagging is working |
-| 14 | Open `http://localhost:8080/ui` in a browser, find the query by the `mcp_query_id` in the query text | Query appears in Trino UI with the tag comment visible |
-| 15 | `Run SELECT * FROM mysql_testdb.testdb.test on trino-local and save the results to /tmp/test.csv` | Returns `Results written to /tmp/test.csv (2 rows, 1 columns)` — no table inline |
-| 16 | `cat /tmp/test.csv` (in terminal) | CSV file contains header `name` and 2 data rows |
-| 17 (cleanup) | `Remove the mysql_testdb catalog from trino-local` | Returns `Catalog "mysql_testdb" removed from cluster "trino-local"` |
+| 1 | `List all clusters in the meridian namespace` | Shows `trino-local` and the seeded test clusters with phase and health |
+| 2 | `Get details for the cluster named trino-local` | Coordinator URL `http://localhost:8080`, phase, health |
+| 3 | `Add a catalog called mysql_testdb to trino-local with connector.name=mysql, connection-url=jdbc:mysql://mysql:3306, connection-user=root, connection-password=trino_test` | `Catalog "mysql_testdb" added to cluster "trino-local"` |
+| 4 | `List all catalogs on trino-local` | Shows `mysql_testdb`, `system`, `tpch`. Fresh result, because `add_catalog` cleared the cache |
+| 5 | `List all catalogs on trino-local again` | Same result marked `[cache hit]` |
+| 6 | `List schemas in the mysql_testdb catalog on trino-local` | `information_schema`, `testdb` |
+| 7 | `List tables in mysql_testdb.testdb on trino-local` | The tables in `testdb` |
+| 8 | `Show me the schema for the test table in mysql_testdb.testdb on trino-local` | Column `name` of type `char(11)` |
+| 9 | `Run SELECT * FROM mysql_testdb.testdb.test on trino-local` | 2 rows with a `query_id` line, no `[cache hit]` |
+| 10 | `Run that same query again with ttl=60`, then once more | The third run is marked `[cache hit]` |
+| 11 | `Run DROP TABLE mysql_testdb.testdb.test on trino-local` | Blocked: the server is in read-only mode |
+| 12 | `Run SELECT * FROM mysql_testdb.testdb.test on trino-local and save it to test.csv` | `Results written to …/meridian/exports/test.csv (2 rows, 1 columns)` |
+| 13 | `Remove the mysql_testdb catalog from trino-local` | `Catalog "mysql_testdb" removed from cluster "trino-local"` |
 
-> **Note:** Tests 5, 12 require running the follow-up in the **same Claude Desktop session** — the cache is in-memory and resets when the MCP process restarts.
+Cache results (5, 10) only hold within one MCP server process. Restarting Claude Desktop clears them.
 
----
+### Operator Test Cases
 
-### Phase 2 — Operator Manual Tests
-
-Prerequisites: kind cluster running, CRDs applied, operator running locally.
+Run the operator locally against the kind cluster:
 
 ```bash
-kubectl apply -f operator/config/crd/bases/
+make install && make build
 ./bin/meridian-operator --namespace meridian --kubeconfig ~/.kube/config
 ```
 
-#### Cluster Lifecycle (Empty → Pending → Idle → Reserved → Idle)
-
 | # | Action | Expected result |
 |---|---|---|
-| 18 | `kubectl apply -f operator/config/samples/test-cluster.yaml` | Cluster `test-cluster` created with phase `""` (Empty) |
-| 19 | `kubectl get cluster test-cluster -n meridian -w` | Phase transitions: `""` → `Pending` within seconds as operator creates Deployments and Service |
-| 20 | `kubectl get deployments -n meridian` | `test-cluster-coordinator` (1 replica) and `test-cluster-worker` (2 replicas) exist |
-| 21 | `kubectl get svc -n meridian` | `test-cluster-coordinator` Service exists on port 8080 |
-| 22 | Wait for coordinator pod to be Ready, then watch cluster | Phase transitions `Pending` → `Idle`, `ready: true`, `idleAt` timestamp set |
-| 23 | `kubectl patch cluster test-cluster -n meridian --type=merge -p '{"spec":{"clientId":"client-abc","reservationId":"res-001"}}'` | Cluster transitions `Idle` → `Reserved`, `reservedAt` timestamp set |
-| 24 | `kubectl get cluster test-cluster -n meridian -o jsonpath='{.status.phase}'` | Returns `Reserved` |
-| 25 | `kubectl patch cluster test-cluster -n meridian --type=merge -p '{"spec":{"clientId":"","reservationId":""}}'` | Cluster transitions `Reserved` → `Idle`, `idleAt` refreshed |
-
-#### Hot Standby Pool (ClusterPool)
-
-| # | Action | Expected result |
-|---|---|---|
-| 26 | `kubectl apply -f operator/config/samples/test-clusterpool.yaml` | ClusterPool `test-pool` created with `spec.replicas: 2` |
-| 27 | `kubectl get clusters -n meridian -l meridian.io/cluster-pool=test-pool -w` | 2 clusters created automatically (`test-pool-<suffix>`), each transitioning Empty → Pending → Idle |
-| 28 | `kubectl patch clusterpool test-pool -n meridian --type=merge -p '{"spec":{"replicas":1}}'` | After next reconcile (≤30s), oldest idle cluster deleted — 1 cluster remains |
-| 29 | `kubectl patch clusterpool test-pool -n meridian --type=merge -p '{"spec":{"replicas":3}}'` | 2 new clusters created to reach desired count of 3 |
-| 30 | `kubectl get clusterpool test-pool -n meridian -o jsonpath='{.status}'` | Shows `readyReplicas`, `pendingReplicas`, `reservedReplicas` counts |
-
-#### Cleanup
-
-| # | Action | Expected result |
-|---|---|---|
-| 31 | `kubectl delete clusterpool test-pool -n meridian` | Owner references cascade — all pool clusters deleted automatically |
-| 32 | `kubectl delete cluster test-cluster -n meridian` | Coordinator Deployment, worker Deployment, and Service deleted via owner references |
+| 14 | `kubectl apply -f operator/config/samples/test-cluster.yaml` | Cluster `test-cluster` created with an empty phase |
+| 15 | `kubectl get cluster test-cluster -n meridian -w` | Phase moves to `Pending` within seconds |
+| 16 | `kubectl get deployments -n meridian` | `test-cluster-coordinator` (1 replica) and `test-cluster-worker` (2 replicas) |
+| 17 | `kubectl get deploy test-cluster-worker -n meridian -o jsonpath='{.spec.template.spec.containers[0].resources}'` | Memory request and limit `5Gi`, CPU request `1` (default profile) |
+| 18 | Wait for the coordinator pod to be Ready | Phase `Pending` → `Idle`, `ready: true`, `idleAt` set |
+| 19 | `kubectl patch cluster test-cluster -n meridian --type=merge -p '{"spec":{"clientId":"client-abc","reservationId":"res-001"}}'` | Phase `Idle` → `Reserved`, `reservedAt` set |
+| 20 | `kubectl patch cluster test-cluster -n meridian --type=merge -p '{"spec":{"clientId":"","reservationId":""}}'` | Phase `Reserved` → `Idle` |
+| 21 | `kubectl apply -f operator/config/samples/test-clusterpool.yaml` | ClusterPool `test-pool` with `replicas: 2`. Two clusters `test-pool-<suffix>` are created |
+| 22 | `kubectl patch clusterpool test-pool -n meridian --type=merge -p '{"spec":{"replicas":1}}'` | Within 30s the oldest idle cluster is deleted |
+| 23 | `kubectl patch clusterpool test-pool -n meridian --type=merge -p '{"spec":{"replicas":3}}'` | Two new clusters are created |
+| 24 | `kubectl delete clusterpool test-pool -n meridian` | All pool clusters are deleted (owner references) |
+| 25 | `kubectl delete cluster test-cluster -n meridian` | Its Deployments and Service are deleted |
 
 ---
 
-## CRDs
-
-```yaml
-# meridian.io/v1alpha1
-Cluster              — single Trino cluster lifecycle
-ClusterPool          — hot standby pool of N clusters
-ClusterPoolAutoscaler — scale pool by reservation utilization
-```
-
 ## Beyond AI Agents
 
-The MCP server is a standard RPC interface — any system that automates Trino cluster lifecycle can use it, not just LLMs.
-
-### CI/CD Pipelines
-
-Reserve a fresh cluster for integration tests, run them, release when done:
+The MCP server is a standard RPC interface. Any system that automates Trino cluster lifecycle can use it. For example, a CI job can reserve a fresh cluster for integration tests and release it afterwards (pseudo-code, using any MCP client):
 
 ```yaml
-# GitHub Actions
 - name: Reserve test cluster
   run: |
     RESULT=$(mcp-client call reserve_cluster \
-      --profile ci --reservation-id ${{ github.run_id }})
+      --workload ci --client-id github-actions --reservation-id ${{ github.run_id }})
+    echo "CLUSTER_NAME=$(echo $RESULT | jq -r .clusterName)" >> $GITHUB_ENV
     echo "COORDINATOR_URL=$(echo $RESULT | jq -r .coordinatorUrl)" >> $GITHUB_ENV
 
 - name: Run integration tests
@@ -510,55 +400,32 @@ Reserve a fresh cluster for integration tests, run them, release when done:
 
 - name: Release cluster
   if: always()
-  run: mcp-client call release_cluster --cluster-name ${{ env.CLUSTER_NAME }}
+  run: mcp-client call release_cluster --cluster-name $CLUSTER_NAME --client-id github-actions
 ```
 
-### Workflow Orchestrators
-
-Manage cluster lifecycle as part of an Airflow / Dagster / Prefect DAG:
-
-```python
-@task
-def reserve_trino_cluster(dag_run):
-    return mcp.call("reserve_cluster", profile="batch", reservation_id=dag_run.run_id)
-
-@task
-def run_transformation(cluster):
-    run_dbt(target=cluster["coordinatorUrl"])
-
-@task
-def release_trino_cluster(cluster):
-    mcp.call("release_cluster", cluster_name=cluster["clusterName"])
-```
-
-### Other MCP Clients
-
-| Client | Use case |
-|---|---|
-| Slack / PagerDuty bot | On-call engineer scales pool via button click |
-| Backstage plugin | App developers provision clusters via form, no kubectl access |
-| Terraform / Pulumi provider | Declare cluster pools as infrastructure-as-code |
+The same pattern works as tasks in Airflow, Dagster, or Prefect.
 
 ## Why Meridian
 
-- **No open-source Trino control plane exists** — [trinodb/trino #396](https://github.com/trinodb/trino/issues/396) open since 2019; Meridian is the answer
-- **No official Trino MCP server exists** — [trinodb/trino #26239](https://github.com/trinodb/trino/issues/26239) open; Meridian ships 19 management tools, not just query execution
-- **Works as a universal operations interface** — CI/CD, orchestrators, internal tooling, and AI agents all use the same binary
+- **There is no official open-source Trino operator.** [trinodb/trino#396](https://github.com/trinodb/trino/issues/396) has been open since 2019.
+- **There is no official Trino MCP server.** [trinodb/trino#26239](https://github.com/trinodb/trino/issues/26239) is open. Meridian covers cluster management, not just query execution.
+- **One interface for everyone.** CI/CD, orchestrators, internal tools, and AI agents all use the same binary.
 
 ## Roadmap
 
-| Phase | Status | Description |
+| Area | Status | Description |
 |---|---|---|
-| **Phase 1 — MCP Server** | ✅ Complete | 19 MCP tools, Go binary, stdio + SSE transport, local dev setup, TTL query result cache (5min for schema metadata, opt-in for queries, singleflight deduplication, auto-invalidation on catalog changes), query tagging (`mcp_query_id` for audit correlation), CSV file export for large result sets, query execution plan via `explain_query` |
-| **Phase 2 — Kubernetes Operator** | ✅ Complete | ClusterController (Empty→Pending→Idle→Reserved→Idle→Degraded), ClusterPoolController (hot standby pool, gradual scale-down, oldest-first selection, age recycling via `maxClusterAge`, rolling image upgrades), ClusterPoolAutoscalerController (utilization-based with hysteresis), Trino Gateway integration, workload-labeled pools |
-| **Phase 3 — REST API** | ✅ Complete | Full REST surface: reserve, release, list clusters (phase/profile/workload filters), get cluster, list pools, scale pool — all with mTLS and cross-client ownership validation |
-| **Phase 4 — Catalog & Credential Layer** | ✅ Complete | Annotation-driven credential rotation without cluster restart. Supports Kubernetes Secrets, HashiCorp Vault (K8s auth, KV v2), and AWS Secrets Manager (IRSA). TTL cache with proactive refresh, exponential backoff, and `CredentialRotation` condition on the Cluster object. |
-| **Phase 5 — Profile System** | 🔨 In Progress | ClusterPool profile templates — inject Trino `config.properties`, `jvm.config`, and catalog definitions into coordinator and worker pods at provision time |
-| **Phase 6 — Web UI** | 📋 Planned | Next.js dashboard — cluster pool visualization, catalog management UI, audit trail viewer |
-| **Phase 7 — Helm Chart & Docs** | 📋 Planned | One-command install, quickstart guide, full architecture documentation |
+| MCP Server | ✅ Released | 19 tools (12 on by default), stdio + SSE, query cache with singleflight, query tagging, CSV export |
+| Kubernetes Operator | ✅ Released | Cluster lifecycle with health gating and `Degraded` recovery, hot standby pools, autoscaler, rolling image upgrades, age recycling, Trino Gateway integration, workload-labeled pools |
+| REST API | ✅ Released | Reserve, release, list, get, and scale over mTLS with per-client ownership checks |
+| Credential Rotation | ✅ Released | Rotation without cluster restart from Kubernetes Secrets, Vault, or AWS Secrets Manager |
+| Profile System | ✅ Released | Trino config and pod CPU/memory per profile, built-in and custom |
+| Production Hardening (v1.3) | 🔨 In progress | Secure-by-default MCP server, operator hardening, Helm chart, CI checks |
+| Metrics & E2E Tests | 📋 Planned | Prometheus metrics, Grafana dashboards, kind-based end-to-end tests against real Trino |
+| Web UI | 📋 Planned | Pool visualization, catalog management, audit trail |
 
 ---
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE)
+Apache 2.0. See [LICENSE](LICENSE).
