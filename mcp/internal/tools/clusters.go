@@ -130,6 +130,7 @@ func CreateClusterHandler(c *k8s.Client) func(context.Context, mcp.CallToolReque
 					"labels":    map[string]interface{}{"meridian.io/profile": profile},
 				},
 				"spec": map[string]interface{}{
+					"profile": profile,
 					"image":   image,
 					"workers": int64(workers),
 				},
@@ -190,12 +191,11 @@ func clusterSummary(obj map[string]interface{}) ClusterSummary {
 		case float64:
 			s.Workers = int64(v)
 		}
-		s.CoordinatorURL, _ = spec["coordinatorURL"].(string)
 	}
 	if status != nil {
 		s.Phase, _ = status["phase"].(string)
 		s.Ready, _ = status["ready"].(bool)
-		s.CoordinatorURL, _ = status["coordinatorURL"].(string)
+		s.CoordinatorURL, _ = status["coordinatorUrl"].(string)
 		s.IdleAt, _ = status["idleAt"].(string)
 		s.ReservedAt, _ = status["reservedAt"].(string)
 	}

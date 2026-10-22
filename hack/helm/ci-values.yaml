@@ -13,5 +13,8 @@ mcp:
   auth:
     existingSecret: meridian-mcp-token
   enableTools: ["all"]
+  replicas: 2
+  legacySSE: false
+  allowedOrigins: ["https://app.example.com"]
   extraNamespaces: ["meridian-staging"]
   baseURL: https://meridian.example.com

@@ -7,7 +7,47 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
-## [v1.3.0] — 2026-10-22
+## [v1.4.0] — 2026-10-22
+
+The MCP server now follows the current MCP specification, revision 2026-07-28.
+
+### Upgrade notes
+- **The remote endpoint is now `/mcp` (Streamable HTTP).** Point clients at `http(s)://<host>/mcp`. For example, Claude Code: `claude mcp add --transport http meridian https://…/mcp --header "Authorization: Bearer …"`.
+- **`--transport http` replaces `--transport sse`.** `sse` still works as a deprecated alias.
+- **The old HTTP+SSE transport (`/sse`, `/message`) is deprecated.** It is still served by default (`--legacy-sse`, Helm `mcp.legacySSE`) and will be removed in v1.5.
+- **Requests with an `Origin` header are rejected (403)** unless listed in `--allowed-origins`, which is meant for a web UI behind the same proxy. This is not CORS. Non-browser clients send no Origin and are unaffected.
+- **Tool failures are now tool results with `isError: true`** instead of JSON-RPC errors, as the spec requires. Clients that parsed the old error message should read the result content instead.
+- `make run-mcp-sse` is now `make run-mcp-http`.
+
+### Added
+- **MCP 2026-07-28 support.**
+  - Stateless requests with per-request metadata, plus `server/discover`.
+  - Strict checks on the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers.
+  - Clients from older revisions (2025-03-26 through 2025-11-25) work on the same endpoint.
+- **Multiple MCP replicas.** `/mcp` keeps no session state, so any replica serves any request (Helm `mcp.replicas`; requires `mcp.legacySSE: false`).
+- **Display titles** for every tool.
+- **New flags:**
+  - `--allowed-origins`
+  - `--disable-localhost-protection`
+  - `--legacy-sse`
+- **Request body limit:** 1 MiB, rejected with 413 (also for chunked bodies).
+- **Conformance tests** cover each applicable spec rule over HTTP and stdio.
+
+### Fixed
+- **Query and catalog tools failed on clusters created by the operator.** The MCP server read `status.coordinatorURL`, but the CRD field is `status.coordinatorUrl`. This broke every query, catalog and reservation tool against operator-managed clusters with "has no coordinator URL". A new test pins the fields the MCP server reads to the generated CRDs.
+- **`create_cluster` always failed** with "spec.profile: Required value". It set the profile only as a label. The local-dev fixtures (`hack/cluster-local.yaml`, `config/samples/test-clusters.yaml`) had the same problem, and also used the wrong `coordinatorURL` key, so `hack/setup-local.sh` failed. All are fixed.
+- `scale_pool` returned an always-empty `status`. It now returns the ready and reserved counts.
+- **`list_pools` now returns current counts** (ready, reserved, pending, failed, degraded) as its description promised.
+- **Rolling restarts of the MCP server no longer drop requests.** On SIGTERM it keeps serving for `--shutdown-delay` (default 5s) while reporting not ready, then shuts down. Before this fix, about 3% of calls failed during a restart in testing; after it, none did.
+
+### Changed
+- Upgraded `github.com/mark3labs/mcp-go` from v0.44.1 to v1.3.0.
+
+---
+
+## [v1.3.0] — 2026-10-22 (withdrawn)
+
+> **Withdrawn.** In this release the MCP query, catalog and reservation tools fail on clusters created by the operator (`coordinatorUrl` field mismatch). Use v1.4.0.
 
 ### Upgrade notes (breaking defaults)
 - **SSE needs a token.** Set `MERIDIAN_MCP_TOKEN` or `--auth-token-file`; clients send `Authorization: Bearer <token>`. `--insecure-no-auth` restores the old behavior for local testing.

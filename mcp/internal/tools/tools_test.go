@@ -27,7 +27,7 @@ var readOnly = QueryOptions{}
 func TestListClusters(t *testing.T) {
 	c, _, _ := newTestClient(t,
 		poolObj("p", 2, ""),
-		clusterObj(clusterFixture{name: "a", phase: "Idle", ready: true, coordinatorURL: "http://a:8080"}),
+		clusterObj(clusterFixture{name: "a", phase: "Idle", ready: true, coordinatorUrl: "http://a:8080"}),
 		clusterObj(clusterFixture{name: "b", phase: "Reserved", ready: true, clientID: "ci", reservationID: "r1"}),
 	)
 	out := mustCall(t, ListClustersHandler(c), nil)
@@ -108,7 +108,7 @@ func TestGetAuditLog(t *testing.T) {
 
 func TestReserveByName(t *testing.T) {
 	c, _, _ := newTestClient(t, poolObj("p", 1, ""),
-		clusterObj(clusterFixture{name: "a", phase: "Idle", ready: true, coordinatorURL: "http://a"}))
+		clusterObj(clusterFixture{name: "a", phase: "Idle", ready: true, coordinatorUrl: "http://a"}))
 
 	out := mustCall(t, ReserveClusterHandler(c), map[string]any{"cluster_name": "a", "client_id": "ci", "reservation_id": "r1"})
 	if !strings.Contains(out, `"clusterName": "a"`) {
@@ -268,7 +268,7 @@ func trinoCluster(t *testing.T) (*k8s.Client, *fakeTrino) {
 	t.Helper()
 	f := newFakeTrino(t)
 	c, _, _ := newTestClient(t, poolObj("p", 1, ""),
-		clusterObj(clusterFixture{name: "t", phase: "Reserved", ready: true, coordinatorURL: f.URL()}))
+		clusterObj(clusterFixture{name: "t", phase: "Reserved", ready: true, coordinatorUrl: f.URL()}))
 	return c, f
 }
 
@@ -398,7 +398,7 @@ func TestExplainQuery(t *testing.T) {
 func TestQueryToolsNeedCoordinator(t *testing.T) {
 	c, _, _ := newTestClient(t, poolObj("p", 1, ""),
 		clusterObj(clusterFixture{name: "pending", phase: "Pending"}))
-	wantErr(t, ExecuteQueryHandler(c, readOnly), map[string]any{"cluster_name": "pending", "sql": "SELECT 1"}, "no coordinatorURL")
+	wantErr(t, ExecuteQueryHandler(c, readOnly), map[string]any{"cluster_name": "pending", "sql": "SELECT 1"}, "no coordinator URL")
 	wantErr(t, ExecuteQueryHandler(c, readOnly), map[string]any{"cluster_name": "pending", "sql": ""}, "sql is required")
 }
 
@@ -441,5 +441,40 @@ func TestCatalogChangeBustsCache(t *testing.T) {
 	}
 	if n := len(f.Statements()); n != 3 {
 		t.Errorf("want 3 Trino statements, got %d", n)
+	}
+}
+
+func TestListPoolsReportsStatusCounts(t *testing.T) {
+	p := poolObj("analytics", 3, "analytics")
+	p.Object["status"] = map[string]any{"readyReplicas": int64(2), "reservedReplicas": int64(1), "failedReplicas": int64(1)}
+	c, _, _ := newTestClient(t, p)
+	out := mustCall(t, ListPoolsHandler(c), nil)
+	for _, want := range []string{`"readyReplicas": 2`, `"reservedReplicas": 1`, `"failedReplicas": 1`, `"pendingReplicas": 0`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %s:\n%s", want, out)
+		}
+	}
+}
+
+// The Cluster CRD requires spec.profile; the API server rejects objects
+// without it, which the fake client would not catch.
+func TestCreateClusterSetsRequiredSpecFields(t *testing.T) {
+	c, dyn, _ := newTestClient(t, poolObj("p", 1, ""))
+	mustCall(t, CreateClusterHandler(c), map[string]any{"name": "new", "profile": "large"})
+	obj, err := dyn.Resource(k8s.ClusterGVR).Namespace(testNS).Get(context.Background(), "new", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := obj.Object["spec"].(map[string]any)
+	if spec["profile"] != "large" || spec["image"] == "" || spec["image"] == nil {
+		t.Errorf("spec = %v, want profile=large and an image", spec)
+	}
+}
+
+func TestScalePoolReturnsCounts(t *testing.T) {
+	c, _, _ := newTestClient(t, poolObj("p", 1, ""))
+	out := mustCall(t, ScalePoolHandler(c), map[string]any{"pool_name": "p", "replicas": float64(4)})
+	if !strings.Contains(out, `"desiredReplicas": 4`) || !strings.Contains(out, `"previousReplicas": 1`) || strings.Contains(out, `"status"`) {
+		t.Errorf("unexpected scale_pool output: %s", out)
 	}
 }

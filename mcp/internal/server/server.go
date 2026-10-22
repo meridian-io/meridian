@@ -118,7 +118,8 @@ func New(c *k8s.Client, version string, opts Options) (*server.MCPServer, []stri
 	s := server.NewMCPServer(
 		"meridian",
 		version,
-		server.WithToolCapabilities(true),
+		// The tool set is fixed for the life of the process.
+		server.WithToolCapabilities(false),
 		server.WithRecovery(),
 	)
 
@@ -126,7 +127,10 @@ func New(c *k8s.Client, version string, opts Options) (*server.MCPServer, []stri
 	var names []string
 	register := func(name string) {
 		e := entries[name]
-		s.AddTool(e.tool, e.handler)
+		if e.tool.Title == "" {
+			e.tool.Title = toolTitles[name]
+		}
+		s.AddTool(e.tool, toolErrorsAsResults(e.handler))
 		names = append(names, name)
 	}
 
@@ -139,4 +143,41 @@ func New(c *k8s.Client, version string, opts Options) (*server.MCPServer, []stri
 		}
 	}
 	return s, names
+}
+
+// toolTitles are the display names clients show for each tool.
+var toolTitles = map[string]string{
+	"list_pools":          "List pools",
+	"list_clusters":       "List clusters",
+	"get_cluster":         "Get cluster",
+	"reserve_cluster":     "Reserve cluster",
+	"release_cluster":     "Release cluster",
+	"list_catalogs":       "List catalogs",
+	"list_schemas":        "List schemas",
+	"list_tables":         "List tables",
+	"get_table_schema":    "Get table schema",
+	"explain_query":       "Explain query",
+	"execute_query":       "Run query",
+	"get_audit_log":       "Get audit log",
+	"create_cluster":      "Create cluster",
+	"delete_cluster":      "Delete cluster",
+	"scale_pool":          "Scale pool",
+	"add_catalog":         "Add catalog",
+	"remove_catalog":      "Remove catalog",
+	"rotate_credentials":  "Rotate credentials",
+	"promote_environment": "Promote environment",
+}
+
+// toolErrorsAsResults turns a handler error into a tool result with
+// isError set. The MCP spec asks for tool failures (bad arguments, API
+// errors) to come back this way so the model can see them and correct
+// itself; protocol errors are for unknown tools and malformed requests.
+func toolErrorsAsResults(h handlerFunc) handlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		res, err := h(ctx, req)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return res, nil
+	}
 }

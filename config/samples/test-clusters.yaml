@@ -12,6 +12,7 @@ metadata:
     meridian.io/cluster-pool: standard-pool
     meridian.io/profile: standard-trino
 spec:
+  profile: standard-trino
   image: trinodb/trino:435
   workers: 2
 ---
@@ -24,6 +25,7 @@ metadata:
     meridian.io/cluster-pool: standard-pool
     meridian.io/profile: standard-trino
 spec:
+  profile: standard-trino
   image: trinodb/trino:435
   workers: 2
 ---
@@ -38,6 +40,7 @@ metadata:
     meridian.io/client-id: analytics-team
     meridian.io/reservation-id: res-abc-123
 spec:
+  profile: standard-trino
   image: trinodb/trino:435
   workers: 4
   clientId: analytics-team
@@ -52,6 +55,7 @@ metadata:
     meridian.io/cluster-pool: standard-pool
     meridian.io/profile: standard-trino
 spec:
+  profile: standard-trino
   image: trinodb/trino:435
   workers: 2
 ---

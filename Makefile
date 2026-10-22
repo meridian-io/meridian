@@ -25,9 +25,9 @@ build-mcp:
 run-mcp:
 	cd mcp && go run ./cmd/meridian-mcp --transport stdio --namespace meridian
 
-## Run MCP server locally (SSE on :8080)
-run-mcp-sse:
-	cd mcp && go run ./cmd/meridian-mcp --transport sse --addr :8080 --namespace meridian
+## Run MCP server locally over HTTP (http://localhost:8080/mcp). Needs MERIDIAN_MCP_TOKEN
+run-mcp-http:
+	cd mcp && go run ./cmd/meridian-mcp --transport http --addr :8080 --namespace meridian
 
 ## Run MCP server tests
 test-mcp:

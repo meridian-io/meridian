@@ -66,9 +66,9 @@ operator:
   priorityClassName: ""
 
 mcp:
-  # MCP server in SSE mode, for AI clients that connect over the network.
-  # Off by default. For Claude Desktop on a laptop, run the binary locally
-  # in stdio mode instead.
+  # MCP server for AI clients that connect over the network (Streamable HTTP
+  # at /mcp, MCP spec 2026-07-28 plus older revisions). Off by default. For
+  # Claude Desktop on a laptop, run the binary locally in stdio mode instead.
   enabled: false
 
   image:
@@ -76,8 +76,19 @@ mcp:
     tag: ""
     pullPolicy: IfNotPresent
 
-  # Always one replica: SSE sessions live in the pod's memory, so a second
-  # replica would receive messages for sessions it doesn't know.
+  # The /mcp endpoint is stateless, so any replica can serve any request.
+  # More than one replica requires legacySSE: false, because legacy SSE
+  # sessions live in one pod's memory.
+  replicas: 1
+
+  # Also serve the deprecated HTTP+SSE transport (/sse) for older clients.
+  # Deprecated: will be removed in v1.5.
+  legacySSE: true
+
+  # Origins accepted when a request carries an Origin header, e.g. a web UI
+  # behind the same proxy: ["https://app.example.com"]. Any other Origin gets
+  # 403. Non-browser clients send no Origin and are unaffected. Not CORS.
+  allowedOrigins: []
 
   auth:
     # Existing Secret holding the bearer token clients must send. Required

@@ -11,7 +11,7 @@ kubectl patch cluster trino-idle-01 -n "$NS" --subresource=status --type=merge -
   "status": {
     "phase": "Idle",
     "ready": true,
-    "coordinatorURL": "http://trino-idle-01.meridian.svc.cluster.local:8080",
+    "coordinatorUrl": "http://trino-idle-01.meridian.svc.cluster.local:8080",
     "idleAt": "2026-02-28T08:00:00Z"
   }
 }'
@@ -20,7 +20,7 @@ kubectl patch cluster trino-idle-02 -n "$NS" --subresource=status --type=merge -
   "status": {
     "phase": "Idle",
     "ready": true,
-    "coordinatorURL": "http://trino-idle-02.meridian.svc.cluster.local:8080",
+    "coordinatorUrl": "http://trino-idle-02.meridian.svc.cluster.local:8080",
     "idleAt": "2026-02-28T09:00:00Z"
   }
 }'
@@ -29,7 +29,7 @@ kubectl patch cluster trino-reserved-01 -n "$NS" --subresource=status --type=mer
   "status": {
     "phase": "Reserved",
     "ready": true,
-    "coordinatorURL": "http://trino-reserved-01.meridian.svc.cluster.local:8080",
+    "coordinatorUrl": "http://trino-reserved-01.meridian.svc.cluster.local:8080",
     "idleAt": "2026-02-28T07:00:00Z",
     "reservedAt": "2026-02-28T10:00:00Z"
   }

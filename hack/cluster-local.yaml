@@ -1,5 +1,5 @@
 # Cluster CR for E2E testing.
-# coordinatorURL points to Trino running in Docker Compose (port-forwarded to host).
+# coordinatorUrl points to Trino running in Docker Compose (port-forwarded to host).
 # Apply: kubectl apply -f hack/cluster-local.yaml
 # Then patch status: kubectl apply -f hack/cluster-local.yaml && hack/patch-cluster-local.sh
 ---
@@ -12,5 +12,6 @@ metadata:
     meridian.io/cluster-pool: local-pool
     meridian.io/profile: standard-trino
 spec:
+  profile: standard-trino
   image: trinodb/trino:435
   workers: 0

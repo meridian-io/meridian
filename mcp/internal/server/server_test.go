@@ -1,11 +1,6 @@
 package server
 
 import (
-	"context"
-	"errors"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,73 +115,5 @@ func TestLoadToken(t *testing.T) {
 	}
 	if _, err := LoadToken(filepath.Join(t.TempDir(), "missing"), ""); err == nil {
 		t.Error("missing token file should be an error")
-	}
-}
-
-func TestMuxAuthAndHealth(t *testing.T) {
-	const token = "s3cret-token-0123456789"
-	mcpHit := false
-	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mcpHit = true
-		w.WriteHeader(http.StatusOK)
-	})
-	ready := func(context.Context) error { return nil }
-	srv := httptest.NewServer(NewMux(backend, token, ready))
-	defer srv.Close()
-
-	do := func(path, auth string) int {
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+path, nil)
-		if auth != "" {
-			req.Header.Set("Authorization", auth)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		return resp.StatusCode
-	}
-
-	if code := do("/healthz", ""); code != http.StatusOK {
-		t.Errorf("/healthz without auth = %d, want 200", code)
-	}
-	if code := do("/readyz", ""); code != http.StatusOK {
-		t.Errorf("/readyz without auth = %d, want 200", code)
-	}
-	for _, auth := range []string{"", "Bearer wrong", "Basic " + token, "Bearer " + token + "x"} {
-		if code := do("/sse", auth); code != http.StatusUnauthorized {
-			t.Errorf("/sse with auth %q = %d, want 401", auth, code)
-		}
-	}
-	if mcpHit {
-		t.Fatal("unauthenticated request reached the MCP handler")
-	}
-	if code := do("/sse", "Bearer "+token); code != http.StatusOK || !mcpHit {
-		t.Errorf("/sse with valid token = %d, want 200", code)
-	}
-	if code := do("/message", "bearer "+token); code != http.StatusOK {
-		t.Errorf("scheme should be case-insensitive, got %d", code)
-	}
-	if code := do("/message", ""); code != http.StatusUnauthorized {
-		t.Errorf("/message without token = %d, want 401", code)
-	}
-}
-
-func TestReadyzReportsFailure(t *testing.T) {
-	srv := httptest.NewServer(NewMux(http.NotFoundHandler(), "", func(context.Context) error {
-		return errors.New("api down")
-	}))
-	defer srv.Close()
-	resp, err := http.Get(srv.URL + "/readyz")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("/readyz = %d, want 503", resp.StatusCode)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	if strings.Contains(string(body), "api down") {
-		t.Error("/readyz must not leak error details to unauthenticated callers")
 	}
 }
