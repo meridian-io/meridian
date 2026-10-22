@@ -7,7 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
-## [Unreleased] — v1.3
+## [v1.3.0] — 2026-10-22
 
 ### Upgrade notes (breaking defaults)
 - **SSE needs a token.** Set `MERIDIAN_MCP_TOKEN` or `--auth-token-file`; clients send `Authorization: Bearer <token>`. `--insecure-no-auth` restores the old behavior for local testing.
@@ -65,6 +65,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [v1.0] – [v1.2] — 2026-03
+
+Added the Kubernetes operator (Cluster, ClusterPool and ClusterPoolAutoscaler controllers), the mTLS REST API, credential rotation, and the profile system. See the [GitHub releases](https://github.com/meridian-io/meridian/releases) for details.
+
+---
+
 ## [v0.1.0] — 2026-03-01
 
 First release of Project Meridian — the open-source Trino control plane.
@@ -114,12 +120,3 @@ First release of Project Meridian — the open-source Trino control plane.
 ### Distribution
 - Binaries for macOS (arm64, amd64), Linux (arm64, amd64), Windows (amd64)
 - Docker image: `ghcr.io/meridian-io/meridian-mcp:v0.1.0`
-
----
-
-## [Unreleased]
-
-### Phase 2 — Kubernetes Operator
-- ClusterController — cluster lifecycle: Empty → Pending → Idle → Reserved → Failed
-- ClusterPoolController — hot standby pool reconciliation (scale up/down, gradual deletion)
-- ClusterPoolAutoscalerController — utilization-based autoscaling with hysteresis
