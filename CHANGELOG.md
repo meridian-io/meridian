@@ -16,6 +16,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **`output_file` takes a file name**, written to `--output-dir` (default: a per-user cache dir, e.g. `~/.cache/meridian/exports`). Absolute paths outside that directory (like `/tmp/results.csv`) are rejected. It is disabled in SSE mode.
 - **`execute_query` returns at most 10,000 rows**, including CSV exports. `max_rows=0` used to mean "no limit" and now means 10,000. Results over the limit are marked truncated, and the query is cancelled in Trino.
 - **`reserve_cluster` requires non-empty `client_id` and `reservation_id`.**
+- **A bad `--tls-ca` stops the operator.** If the REST API's CA file is missing or holds no certificates, the operator now refuses to start instead of silently accepting any client.
+- **Building from source needs Go 1.26.**
 
 ### Security
 - Fixed SQL injection in `list_schemas`, `list_tables`, `get_table_schema` (identifiers are now quoted) and in `add_catalog` / `remove_catalog` (names validated).
@@ -47,6 +49,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - RBAC now includes `update` on `clusters/finalizers` and `clusterpools/finalizers`, required where owner-reference permissions are enforced (e.g. OpenShift).
 - A custom profile ConfigMap named after a built-in tier (e.g. `meridian-profile-large`) now starts from that tier instead of `default`.
 - Pools recount clusters against the API server before creating more, so a lagging cache can't make them over-create.
+
+### Helm chart and CI
+- **Helm chart** (`charts/meridian`, published as `oci://ghcr.io/meridian-io/charts/meridian`). Installs the CRDs, the operator (cluster-wide, one install per cluster) with RBAC and leader election, and optionally the mTLS REST API and the MCP server. The MCP server needs a token Secret, and its permissions match the tools you enable. Pods run as non-root with a read-only root filesystem and no capabilities.
+- **REST API fails closed** on a bad `--tls-ca` (see Upgrade notes). Without `--tls-ca`, the operator logs a warning. Added a 10s header-read timeout.
+- **Go 1.26.** Both modules now require Go 1.26, and releases build with the latest 1.26 patch. Go 1.23 no longer receives security fixes, and the patched `golang.org/x/net` needs 1.26. This clears all 30+ known vulnerabilities govulncheck reported.
+- **CI** runs build, vet, race tests, golangci-lint, and govulncheck for both modules, plus gofmt, a generated-manifest drift check (operator and chart), and `helm lint` + kubeconform.
+- Fixed error messages containing `%` being garbled in operator logs.
 
 ### Added
 - `/healthz` and `/readyz` endpoints, graceful shutdown on SIGTERM, keep-alive on SSE streams.

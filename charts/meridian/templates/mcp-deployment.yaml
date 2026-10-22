@@ -1,0 +1,136 @@
+{{- if .Values.mcp.enabled }}
+{{- $mcp := .Values.mcp }}
+{{- if and $mcp.auth.existingSecret $mcp.auth.insecureNoAuth }}
+{{- fail "set either mcp.auth.existingSecret or mcp.auth.insecureNoAuth, not both" }}
+{{- end }}
+{{- if and (not $mcp.auth.existingSecret) (not $mcp.auth.insecureNoAuth) }}
+{{- fail "mcp.auth.existingSecret is required when mcp.enabled is true (create a Secret holding a bearer token), or set mcp.auth.insecureNoAuth=true for local testing only" }}
+{{- end }}
+{{- $tools := include "meridian.mcp.tools" . | fromJsonArray }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "meridian.mcp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "meridian.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "meridian.mcp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "meridian.mcp.selectorLabels" . | nindent 8 }}
+        {{- with $mcp.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $mcp.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "meridian.mcp.fullname" . }}
+      securityContext:
+        {{- include "meridian.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $mcp.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: 35
+      containers:
+        - name: mcp
+          image: "{{ $mcp.image.repository }}:{{ $mcp.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $mcp.image.pullPolicy }}
+          args:
+            - --transport=sse
+            - --addr=:8080
+            - --namespace={{ include "meridian.watchNamespace" . }}
+            {{- if $mcp.auth.existingSecret }}
+            - --auth-token-file=/etc/meridian/mcp-auth/{{ $mcp.auth.secretKey }}
+            {{- else }}
+            - --insecure-no-auth
+            {{- end }}
+            {{- if $tools }}
+            - --enable-tools={{ join "," $tools }}
+            {{- end }}
+            {{- if $mcp.allowWrites }}
+            - --allow-writes
+            {{- end }}
+            {{- with $mcp.baseURL }}
+            - --base-url={{ . }}
+            {{- end }}
+            {{- with $mcp.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with $mcp.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml $mcp.resources | nindent 12 }}
+          securityContext:
+            {{- include "meridian.containerSecurityContext" . | nindent 12 }}
+          {{- if $mcp.auth.existingSecret }}
+          volumeMounts:
+            - name: auth
+              mountPath: /etc/meridian/mcp-auth
+              readOnly: true
+          {{- end }}
+      {{- if $mcp.auth.existingSecret }}
+      volumes:
+        - name: auth
+          secret:
+            secretName: {{ $mcp.auth.existingSecret }}
+            items:
+              - key: {{ $mcp.auth.secretKey }}
+                path: {{ $mcp.auth.secretKey }}
+      {{- end }}
+      {{- with $mcp.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $mcp.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $mcp.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "meridian.mcp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "meridian.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+spec:
+  type: {{ $mcp.service.type }}
+  selector:
+    {{- include "meridian.mcp.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $mcp.service.port }}
+      targetPort: http
+{{- end }}

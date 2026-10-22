@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -318,7 +319,7 @@ func (r *ClusterController) reconcileDelete(ctx context.Context, cluster *meridi
 }
 
 func (r *ClusterController) setFailed(ctx context.Context, cluster *meridianv1alpha1.Cluster, reason string) (ctrl.Result, error) {
-	log.FromContext(ctx).Error(fmt.Errorf(reason), "cluster failed", "cluster", cluster.Name)
+	log.FromContext(ctx).Error(errors.New(reason), "cluster failed", "cluster", cluster.Name)
 	cluster.Status.Phase = meridianv1alpha1.ClusterPhaseFailed
 	_ = r.Status().Update(ctx, cluster)
 	return ctrl.Result{}, nil
@@ -620,7 +621,7 @@ func (r *ClusterController) completeRotation(ctx context.Context, cluster *merid
 
 // handleRotationFailure increments the failure counter and requeues with exponential backoff.
 func (r *ClusterController) handleRotationFailure(ctx context.Context, cluster *meridianv1alpha1.Cluster, reason string) (ctrl.Result, error) {
-	log.FromContext(ctx).Error(fmt.Errorf(reason), "rotation failed",
+	log.FromContext(ctx).Error(errors.New(reason), "rotation failed",
 		"cluster", cluster.Name,
 		"failures", cluster.Status.RotationFailures+1)
 
@@ -644,7 +645,7 @@ func (r *ClusterController) handleRotationFailure(ctx context.Context, cluster *
 // Clears the annotation so the operator does not loop, sets a Failed condition,
 // but does NOT change the cluster Phase — rotation failure ≠ cluster failure.
 func (r *ClusterController) clearAnnotationAndFail(ctx context.Context, cluster *meridianv1alpha1.Cluster, reason string) (ctrl.Result, error) {
-	log.FromContext(ctx).Error(fmt.Errorf(reason), "non-retriable rotation error", "cluster", cluster.Name)
+	log.FromContext(ctx).Error(errors.New(reason), "non-retriable rotation error", "cluster", cluster.Name)
 
 	patch := []byte(`{"metadata":{"annotations":{"` + credentials.AnnotationRotateCredentials + `":null}}}`)
 	if err := r.Patch(ctx, cluster, client.RawPatch(types.MergePatchType, patch)); err != nil {

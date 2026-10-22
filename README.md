@@ -2,7 +2,7 @@
 
 **The open-source Trino control plane and MCP server for Kubernetes.**
 
-**[getmeridian.dev](https://getmeridian.dev)** · **Latest release: [v1.2](https://github.com/meridian-io/meridian/releases/tag/v1.2)**
+**[getmeridian.dev](https://getmeridian.dev)** · **Latest release: [v1.3.0](https://github.com/meridian-io/meridian/releases/tag/v1.3.0)**
 
 Trino clusters take 30–90 seconds to provision. Meridian eliminates that wait: a hot standby pool keeps pre-provisioned clusters idle and ready, so a reservation completes in zero seconds. No cold starts for CI/CD jobs, batch workloads, or multi-tenant platforms.
 
@@ -10,6 +10,68 @@ Meridian has two parts:
 
 - A **Kubernetes operator** that manages the full cluster lifecycle (`Empty → Pending → Idle → Reserved`) and keeps a warm pool of clusters.
 - An **MCP server** that lets Claude, Cursor, or any MCP client explore catalogs, run queries, and reserve clusters in natural language. It is secure by default: read-only queries, a token required for remote access, and config-changing tools off unless you enable them.
+
+---
+
+## Quick Start (Helm)
+
+Installs the operator, its CRDs, and RBAC. Needs Kubernetes 1.26+ and Helm 3.
+
+```bash
+helm install meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.3.0 \
+  --namespace meridian --create-namespace
+
+# or from a checkout of this repo
+helm install meridian charts/meridian --namespace meridian --create-namespace
+```
+
+Create a pool of two hot-standby Trino clusters and watch them become `Idle`:
+
+```bash
+cat <<EOF | kubectl apply -n meridian -f -
+apiVersion: meridian.io/v1alpha1
+kind: ClusterPool
+metadata:
+  name: demo-pool
+spec:
+  replicas: 2
+  template:
+    profile: default
+    image: trinodb/trino:435
+    workers: 1
+EOF
+kubectl -n meridian get clusters -w
+```
+
+Optional parts are off by default:
+
+| Value | Default | What it does |
+|---|---|---|
+| `watchNamespace` | release namespace | The operator's home namespace: leader election, REST API, credential Secrets, and the MCP server's default namespace |
+| `operator.rest.enabled`, `operator.rest.tlsSecretName` | off | mTLS reservation REST API. The Secret holds `tls.crt`, `tls.key`, and `ca.crt` (the CA that signs client certificates) |
+| `mcp.enabled`, `mcp.auth.existingSecret` | off | MCP server over SSE for remote AI clients. The Secret holds the bearer token |
+| `mcp.enableTools` | `[]` | Held tools to turn on, or `["all"]`. The chart grants only the Kubernetes permissions those tools need |
+| `mcp.allowWrites` | `false` | Let `execute_query` change data |
+| `operator.credentials.provider` | `kubernetes` | `vault` or `aws-secrets-manager` for credential rotation |
+
+To run the MCP server in the cluster:
+
+```bash
+kubectl -n meridian create secret generic meridian-mcp-token --from-literal=token=$(openssl rand -hex 32)
+helm upgrade meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.3.0 -n meridian \
+  --reuse-values --set mcp.enabled=true --set mcp.auth.existingSecret=meridian-mcp-token
+```
+
+The operator reconciles Meridian resources in every namespace, so install the chart once per Kubernetes cluster. The REST certificate and the MCP token are read at startup; restart the pod after rotating them.
+
+All pods run as non-root with a read-only root filesystem and no Linux capabilities. See [`charts/meridian/values.yaml`](charts/meridian/values.yaml) for every setting.
+
+**Upgrading:** Helm installs CRDs once and never upgrades them. Before upgrading the chart, apply the new CRDs from the target version:
+
+```bash
+helm pull oci://ghcr.io/meridian-io/charts/meridian --version <version> --untar
+kubectl apply --server-side -f meridian/crds/
+```
 
 ---
 
@@ -21,13 +83,13 @@ The `meridian` binary is an MCP server for Trino clusters managed by Meridian. I
 
 **Binary** (macOS arm64 shown; Linux and Windows builds are on the [releases page](https://github.com/meridian-io/meridian/releases)):
 ```bash
-curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.2/trino-mcp-server_1.2_darwin_arm64.tar.gz
+curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.3.0/trino-mcp-server_1.3.0_darwin_arm64.tar.gz
 tar xzf meridian.tar.gz && sudo mv meridian /usr/local/bin/
 ```
 
 **Docker:**
 ```bash
-docker pull ghcr.io/meridian-io/trino-mcp-server:v1.2
+docker pull ghcr.io/meridian-io/trino-mcp-server:v1.3.0
 ```
 
 ### Run
@@ -240,10 +302,9 @@ Sizes apply to newly created clusters. Existing clusters pick them up when the p
 
 ### Run the Operator
 
-```bash
-docker pull ghcr.io/meridian-io/trino-operator:v1.2
+Use the [Helm chart](#quick-start-helm) for clusters. To run from source against your current kubeconfig:
 
-# or build and run from source against your current kubeconfig
+```bash
 make install   # apply CRDs
 make build     # → bin/meridian-operator
 ./bin/meridian-operator --namespace meridian
@@ -252,6 +313,8 @@ make build     # → bin/meridian-operator
 ./bin/meridian-operator --namespace meridian \
   --rest-addr :8443 --tls-cert cert.pem --tls-key key.pem --tls-ca ca.pem
 ```
+
+`--tls-ca` turns on client-certificate checks. Without it the REST API accepts any client and logs a warning. If the CA file can't be read, the operator refuses to start.
 
 ### Reserve a Cluster (REST API)
 
@@ -273,7 +336,7 @@ curl -X POST https://meridian:8443/api/v1/clusters/reservations \
 
 This setup runs Trino and MySQL in Docker and a local kind Kubernetes cluster, so you can test every tool end to end without cloud infrastructure.
 
-**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop), then `brew install kind kubectl`.
+**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop), Go 1.26+, then `brew install kind kubectl helm`.
 
 ### 1. Start Trino and MySQL
 
@@ -332,8 +395,20 @@ Restart Claude Desktop to load the tools.
 make build       # operator → bin/meridian-operator
 make build-mcp   # MCP server → bin/meridian
 make test-all    # all tests (operator + MCP)
-make manifests   # regenerate CRDs and RBAC after changing API types
+make manifests   # regenerate CRDs and RBAC after changing API types (also copies them into the chart)
+make helm-lint   # lint the chart and validate it against Kubernetes schemas (needs kubeconform)
 ```
+
+To try the chart on the kind cluster with locally built images:
+
+```bash
+make docker-build docker-build-mcp
+kind load docker-image --name meridian-dev ghcr.io/meridian-io/trino-operator:dev ghcr.io/meridian-io/trino-mcp-server:dev
+helm install meridian charts/meridian -n meridian \
+  --set operator.image.tag=dev --set operator.image.pullPolicy=Never
+```
+
+CI runs build, vet, race tests, golangci-lint, and govulncheck for both modules, plus gofmt, a check that generated CRDs and RBAC match the Go types, and the chart lint.
 
 ## Manual Test Cases
 

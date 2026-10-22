@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -127,7 +128,7 @@ func (h *ReservationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(reservationResponse{
+	_ = json.NewEncoder(w).Encode(reservationResponse{
 		ClusterName:    result.ClusterName,
 		CoordinatorURL: result.CoordinatorURL,
 		ReservedAt:     result.ReservedAt.Format(time.RFC3339),
@@ -225,7 +226,7 @@ func (h *ListClustersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(summaries)
+	_ = json.NewEncoder(w).Encode(summaries)
 }
 
 // ── GET /api/v1/clusters/{name} ──────────────────────────────────────────────
@@ -250,7 +251,7 @@ func (h *GetClusterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(toClusterSummary(*cluster))
+	_ = json.NewEncoder(w).Encode(toClusterSummary(*cluster))
 }
 
 // ── GET /api/v1/pools ────────────────────────────────────────────────────────
@@ -274,7 +275,7 @@ func (h *ListPoolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(summaries)
+	_ = json.NewEncoder(w).Encode(summaries)
 }
 
 // ── PATCH /api/v1/pools/{name}/replicas ──────────────────────────────────────
@@ -321,7 +322,7 @@ func (h *ScalePoolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(toPoolSummary(*pool))
+	_ = json.NewEncoder(w).Encode(toPoolSummary(*pool))
 }
 
 // ── Server wiring ─────────────────────────────────────────────────────────────
@@ -337,7 +338,11 @@ func extractClientID(tlsState *tls.ConnectionState) string {
 // caFile is optional: when provided, only clients presenting a certificate
 // signed by that CA are accepted (mTLS). When empty, client cert verification
 // is skipped (useful for local dev without a PKI).
-func NewServer(addr string, k8sClient client.Client, namespace string, caFile string) *http.Server {
+// NewServer builds the REST API server. When caFile is set, every client must
+// present a certificate signed by that CA (mTLS); a CA file that can't be read
+// or holds no certificates is an error, so the API never silently falls back
+// to accepting any client.
+func NewServer(addr string, k8sClient client.Client, namespace string, caFile string) (*http.Server, error) {
 	reserver := trino.NewClusterReserver(k8sClient)
 
 	mux := http.NewServeMux()
@@ -373,18 +378,21 @@ func NewServer(addr string, k8sClient client.Client, namespace string, caFile st
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
 	if caFile != "" {
 		caPEM, err := os.ReadFile(caFile)
-		if err == nil {
-			pool := x509.NewCertPool()
-			if pool.AppendCertsFromPEM(caPEM) {
-				tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
-				tlsCfg.ClientCAs = pool
-			}
+		if err != nil {
+			return nil, fmt.Errorf("read client CA %s: %w", caFile, err)
 		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("client CA %s contains no PEM certificates", caFile)
+		}
+		tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+		tlsCfg.ClientCAs = pool
 	}
 
 	return &http.Server{
-		Addr:      addr,
-		Handler:   mux,
-		TLSConfig: tlsCfg,
-	}
+		Addr:              addr,
+		Handler:           mux,
+		TLSConfig:         tlsCfg,
+		ReadHeaderTimeout: 10 * time.Second,
+	}, nil
 }

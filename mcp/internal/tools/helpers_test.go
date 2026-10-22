@@ -106,7 +106,7 @@ func (f *fakeTrino) handle(w http.ResponseWriter, r *http.Request) {
 		})
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/statement/q/"):
 		var page int
-		fmt.Sscanf(strings.TrimPrefix(r.URL.Path, "/v1/statement/q/"), "%d", &page)
+		_, _ = fmt.Sscanf(strings.TrimPrefix(r.URL.Path, "/v1/statement/q/"), "%d", &page)
 		resp := map[string]any{
 			"id":      "q",
 			"columns": []map[string]any{{"name": "c1"}, {"name": "c2"}},

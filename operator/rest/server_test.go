@@ -207,7 +207,9 @@ func TestListClusters_PhaseFilter(t *testing.T) {
 	h.ServeHTTP(w, req("GET", "/api/v1/clusters?phase=Idle", ""))
 
 	var result []clusterSummary
-	json.NewDecoder(w.Body).Decode(&result)
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
 	if len(result) != 1 || result[0].Name != "c1" {
 		t.Fatalf("expected only c1 (Idle), got %+v", result)
 	}
@@ -222,7 +224,9 @@ func TestListClusters_ProfileFilter(t *testing.T) {
 	h.ServeHTTP(w, req("GET", "/api/v1/clusters?profile=large", ""))
 
 	var result []clusterSummary
-	json.NewDecoder(w.Body).Decode(&result)
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
 	if len(result) != 1 || result[0].Profile != "large" {
 		t.Fatalf("expected only large-profile cluster, got %+v", result)
 	}
@@ -244,7 +248,9 @@ func TestGetCluster_OK(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var result clusterSummary
-	json.NewDecoder(w.Body).Decode(&result)
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
 	if result.Name != "c1" {
 		t.Fatalf("expected cluster c1, got %s", result.Name)
 	}
@@ -279,7 +285,9 @@ func TestListPools_OK(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var result []poolSummary
-	json.NewDecoder(w.Body).Decode(&result)
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
 	if len(result) != 2 {
 		t.Fatalf("expected 2 pools, got %d", len(result))
 	}
@@ -301,7 +309,9 @@ func TestScalePool_OK(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	var result poolSummary
-	json.NewDecoder(w.Body).Decode(&result)
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
 	if result.Replicas != 5 {
 		t.Fatalf("expected replicas=5, got %d", result.Replicas)
 	}

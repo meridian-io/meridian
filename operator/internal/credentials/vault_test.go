@@ -20,11 +20,11 @@ type vaultServer struct {
 	loginCalls atomic.Int32
 
 	// Configurable responses.
-	loginStatus  int
-	loginToken   string
-	loginTTL     int // lease_duration seconds
-	kvStatus     int
-	kvData       map[string]interface{}
+	loginStatus int
+	loginToken  string
+	loginTTL    int // lease_duration seconds
+	kvStatus    int
+	kvData      map[string]interface{}
 }
 
 func newVaultServer(token string, ttl int, kvData map[string]interface{}) *vaultServer {
@@ -47,7 +47,7 @@ func (vs *vaultServer) handler() http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"auth": map[string]interface{}{
 				"client_token":   vs.loginToken,
 				"lease_duration": vs.loginTTL,
@@ -65,7 +65,7 @@ func (vs *vaultServer) handler() http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": map[string]interface{}{
 				"data":     vs.kvData,
 				"metadata": map[string]interface{}{"version": 1},
@@ -212,7 +212,7 @@ func TestVaultProvider_PermissionDenied(t *testing.T) {
 		if r.URL.Path == "/v1/auth/kubernetes/login" {
 			tok := tokens[callCount%len(tokens)]
 			callCount++
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"auth": map[string]interface{}{
 					"client_token":   tok,
 					"lease_duration": 3600,
@@ -226,14 +226,16 @@ func TestVaultProvider_PermissionDenied(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": map[string]interface{}{"data": kvData},
 		})
 	}))
 	defer srv.Close()
 
 	jwtPath := filepath.Join(t.TempDir(), "token")
-	os.WriteFile(jwtPath, []byte("test-jwt"), 0600)
+	if err := os.WriteFile(jwtPath, []byte("test-jwt"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	p := NewVaultProvider(srv.URL, "meridian-operator", "secret")
 	p.tokenPath = jwtPath
 
@@ -292,7 +294,9 @@ func TestVaultProvider_ContextCancelled(t *testing.T) {
 	cancel()
 
 	jwtPath := filepath.Join(t.TempDir(), "token")
-	os.WriteFile(jwtPath, []byte("test-jwt"), 0600)
+	if err := os.WriteFile(jwtPath, []byte("test-jwt"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	p := NewVaultProvider(srv.URL, "meridian-operator", "secret")
 	p.tokenPath = jwtPath
 

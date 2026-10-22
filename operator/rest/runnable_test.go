@@ -161,3 +161,30 @@ func TestRunnableCancelsInFlightRequests(t *testing.T) {
 		t.Fatalf("Start returned %v, want nil", err)
 	}
 }
+
+func TestNewServerRejectsBadClientCA(t *testing.T) {
+	if _, err := NewServer(":0", nil, "ns", "/nonexistent/ca.crt"); err == nil {
+		t.Error("missing CA file must be an error, not a silent fallback to no client auth")
+	}
+	bad := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(bad, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewServer(":0", nil, "ns", bad); err == nil {
+		t.Error("CA file without certificates must be an error")
+	}
+}
+
+func TestNewServerRequiresClientCertWithCA(t *testing.T) {
+	ca, _ := writeSelfSignedCert(t)
+	srv, err := NewServer(":0", nil, "ns", ca)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.TLSConfig.ClientAuth != tls.RequireAndVerifyClientCert {
+		t.Errorf("ClientAuth = %v, want RequireAndVerifyClientCert", srv.TLSConfig.ClientAuth)
+	}
+	if srv.ReadHeaderTimeout == 0 {
+		t.Error("ReadHeaderTimeout must be set to limit slow-header clients")
+	}
+}

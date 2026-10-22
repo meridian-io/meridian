@@ -271,17 +271,10 @@ func newTrinoServer(t *testing.T) *httptest.Server {
 		}
 		var v resp
 		v.Stats.State = "FINISHED"
-		json.NewEncoder(w).Encode(v)
+		_ = json.NewEncoder(w).Encode(v)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
-}
-
-// newRotationController builds a ClusterController wired with the kubernetes
-// credential provider pointing at the fake client.
-func newRotationController(c interface{ Get(context.Context, types.NamespacedName, interface{ DeepCopyObject() runtime.Object }, ...interface{}) error }, s *runtime.Scheme, fakeClient interface{}) *ClusterController {
-	// We accept the fake client directly; callers pass a sigs client.Client.
-	return nil // replaced below
 }
 
 // TestClusterController_RotationSuccess verifies that a rotation annotation

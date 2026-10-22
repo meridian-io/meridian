@@ -19,7 +19,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.26.x"
+          check-latest: true
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -38,3 +39,20 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      # Publishes oci://ghcr.io/meridian-io/charts/meridian. The chart's
+      # appVersion is set to the git tag so it points at the images built above.
+      - name: Publish Helm chart
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          case "$VERSION" in *.*.*) ;; *) VERSION="${VERSION}.0" ;; esac
+          helm package charts/meridian --version "$VERSION" --app-version "$GITHUB_REF_NAME"
+          echo "$GHCR_TOKEN" | helm registry login ghcr.io -u "$OWNER" --password-stdin
+          helm push "meridian-${VERSION}.tgz" oci://ghcr.io/meridian-io/charts

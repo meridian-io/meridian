@@ -1,0 +1,17 @@
+# Turns on every optional part of the chart so CI lints and validates all of it.
+operator:
+  replicas: 2
+  credentials:
+    provider: vault
+    vault:
+      address: https://vault.example.com:8200
+  rest:
+    enabled: true
+    tlsSecretName: meridian-rest-tls
+mcp:
+  enabled: true
+  auth:
+    existingSecret: meridian-mcp-token
+  enableTools: ["all"]
+  extraNamespaces: ["meridian-staging"]
+  baseURL: https://meridian.example.com

@@ -151,7 +151,7 @@ func TestSingleflightWaiterHonorsOwnContext(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 
-	go executeTrinoQueryCached(context.Background(), srv.URL, "SELECT 'slow'", 0, time.Minute)
+	go func() { _, _ = executeTrinoQueryCached(context.Background(), srv.URL, "SELECT 'slow'", 0, time.Minute) }()
 	time.Sleep(50 * time.Millisecond) // let the leader register
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -170,7 +170,7 @@ func TestSingleflightWaiterRunsQueryWhenLeaderCancelled(t *testing.T) {
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
 	leaderDone := make(chan struct{})
 	go func() {
-		executeTrinoQueryCached(leaderCtx, f.URL(), "SELECT 'x'", 0, time.Minute)
+		_, _ = executeTrinoQueryCached(leaderCtx, f.URL(), "SELECT 'x'", 0, time.Minute)
 		close(leaderDone)
 	}()
 	time.Sleep(50 * time.Millisecond)
@@ -203,7 +203,7 @@ func TestStaleResultNotCachedAfterInvalidation(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		executeTrinoQueryCached(context.Background(), srv.URL, "SHOW CATALOGS", 0, time.Minute)
+		_, _ = executeTrinoQueryCached(context.Background(), srv.URL, "SHOW CATALOGS", 0, time.Minute)
 		close(done)
 	}()
 	time.Sleep(50 * time.Millisecond)

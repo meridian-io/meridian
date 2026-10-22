@@ -64,11 +64,11 @@ func TestParseRotationAnnotation_UnknownProvider(t *testing.T) {
 
 func TestParseRotationAnnotation_MissingComponent(t *testing.T) {
 	cases := []string{
-		"kubernetes/mysql_catalog",   // no path
-		"kubernetes",                 // only provider
-		"",                           // empty
-		"kubernetes//mysql-secret",   // empty catalog
-		"kubernetes/mysql_catalog/",  // empty path
+		"kubernetes/mysql_catalog",  // no path
+		"kubernetes",                // only provider
+		"",                          // empty
+		"kubernetes//mysql-secret",  // empty catalog
+		"kubernetes/mysql_catalog/", // empty path
 	}
 	for _, c := range cases {
 		_, err := ParseRotationAnnotation(c)

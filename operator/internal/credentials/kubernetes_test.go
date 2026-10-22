@@ -30,9 +30,9 @@ func newSecret(name, namespace string, data map[string][]byte) *corev1.Secret {
 // TestKubernetesProvider_Fetch verifies that Secret data is returned as properties.
 func TestKubernetesProvider_Fetch(t *testing.T) {
 	secret := newSecret("mysql-credentials", "meridian", map[string][]byte{
-		"connector.name":     []byte("mysql"),
-		"connection-url":     []byte("jdbc:mysql://mysql:3306"),
-		"connection-user":    []byte("root"),
+		"connector.name":      []byte("mysql"),
+		"connection-url":      []byte("jdbc:mysql://mysql:3306"),
+		"connection-user":     []byte("root"),
 		"connection-password": []byte("supersecret"),
 	})
 
