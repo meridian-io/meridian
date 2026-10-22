@@ -1,0 +1,46 @@
+Meridian {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+The operator reconciles Meridian resources in all namespaces. Its home namespace
+(leader election, REST API, credential Secrets) is: {{ include "meridian.watchNamespace" . }}
+
+Check it is running:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+
+Create a pool of two hot-standby Trino clusters:
+cat <<EOF | kubectl apply -n {{ include "meridian.watchNamespace" . }} -f -
+apiVersion: meridian.io/v1alpha1
+kind: ClusterPool
+metadata:
+  name: demo-pool
+spec:
+  replicas: 2
+  template:
+    profile: default
+    image: trinodb/trino:435
+    workers: 1
+EOF
+  kubectl -n {{ include "meridian.watchNamespace" . }} get clusters -w
+{{- if .Values.operator.rest.enabled }}
+
+REST API (mTLS): {{ include "meridian.operator.restName" . }}.{{ .Release.Namespace }}.svc:{{ .Values.operator.rest.port }}
+Clients need a certificate signed by the ca.crt in Secret {{ .Values.operator.rest.tlsSecretName }}.
+{{- end }}
+{{- if .Values.mcp.enabled }}
+
+MCP server (SSE): http://{{ include "meridian.mcp.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.mcp.service.port }}/sse
+{{- if not .Values.mcp.auth.existingSecret }}
+
+WARNING: MCP authentication is DISABLED. Anyone who can reach the Service can use
+every enabled tool. Use this only for local testing.
+{{- else }}
+Clients send:  Authorization: Bearer <token from Secret {{ .Values.mcp.auth.existingSecret }}>
+{{- end }}
+
+To try it from your machine:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "meridian.mcp.fullname" . }} 8080:{{ .Values.mcp.service.port }}
+{{- end }}
+
+CRDs: Helm installs them on first install but never upgrades or deletes them.
+Before upgrading the chart, apply the new CRDs from the target version:
+  helm pull oci://ghcr.io/meridian-io/charts/meridian --version <version> --untar
+  kubectl apply --server-side -f meridian/crds/

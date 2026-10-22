@@ -1,0 +1,18 @@
+{{- if .Values.operator.rest.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "meridian.operator.restName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "meridian.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  type: {{ .Values.operator.rest.service.type }}
+  selector:
+    {{- include "meridian.operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: rest
+      port: {{ .Values.operator.rest.port }}
+      targetPort: rest
+{{- end }}

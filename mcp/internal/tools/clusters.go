@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"github.com/meridian-io/meridian/mcp/internal/k8s"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // ClusterSummary is the JSON shape returned by list_clusters / get_cluster.

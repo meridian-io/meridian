@@ -21,18 +21,22 @@ func trinoHandler(responses []trinoResponse) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(responses[idx])
+		_ = json.NewEncoder(w).Encode(responses[idx])
 		idx++
 	})
 }
 
 func finishedResp() trinoResponse {
-	return trinoResponse{Stats: struct{ State string `json:"state"` }{State: "FINISHED"}}
+	return trinoResponse{Stats: struct {
+		State string `json:"state"`
+	}{State: "FINISHED"}}
 }
 
 func failedResp(msg string) trinoResponse {
 	return trinoResponse{
-		Stats: struct{ State string `json:"state"` }{State: "FAILED"},
+		Stats: struct {
+			State string `json:"state"`
+		}{State: "FAILED"},
 		Error: &struct {
 			Message string `json:"message"`
 		}{Message: msg},

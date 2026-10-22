@@ -1,0 +1,129 @@
+# The operator's home namespace: its leader-election lease, the REST API's
+# default namespace, Kubernetes credential Secrets, and the MCP server's
+# default namespace. Defaults to the release namespace and must already exist.
+# The operator reconciles Meridian resources in ALL namespaces, so install the
+# chart only once per Kubernetes cluster.
+watchNamespace: ""
+
+imagePullSecrets: []
+
+operator:
+  image:
+    repository: ghcr.io/meridian-io/trino-operator
+    # Defaults to the chart's appVersion.
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # More than one replica is safe: one leader runs the controllers, and every
+  # replica serves the REST API.
+  replicas: 1
+
+  serviceAccount:
+    # Annotations for the operator's ServiceAccount, e.g. an IAM role for
+    # AWS Secrets Manager (eks.amazonaws.com/role-arn).
+    annotations: {}
+
+  # Clusters reconciled in parallel.
+  clusterConcurrency: 5
+  # Maximum clusters a ClusterPool creates per reconcile cycle.
+  poolMaxCreatesPerCycle: 3
+
+  credentials:
+    # Secret backend for credential rotation: kubernetes, vault or aws-secrets-manager.
+    provider: kubernetes
+    vault:
+      address: ""
+      role: meridian-operator
+      mount: secret
+    aws:
+      region: ""
+
+  # Reservation REST API (mTLS). Off by default.
+  rest:
+    enabled: false
+    # Existing Secret with tls.crt, tls.key and ca.crt. ca.crt is the CA that
+    # signs client certificates; every client must present one. Files are
+    # read at startup: restart the operator after renewing the certificate.
+    tlsSecretName: ""
+    port: 8443
+    service:
+      type: ClusterIP
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+  extraArgs: []
+  extraEnv: []
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+
+mcp:
+  # MCP server in SSE mode, for AI clients that connect over the network.
+  # Off by default. For Claude Desktop on a laptop, run the binary locally
+  # in stdio mode instead.
+  enabled: false
+
+  image:
+    repository: ghcr.io/meridian-io/trino-mcp-server
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # Always one replica: SSE sessions live in the pod's memory, so a second
+  # replica would receive messages for sessions it doesn't know.
+
+  auth:
+    # Existing Secret holding the bearer token clients must send. Required
+    # unless insecureNoAuth is true. The token is read at startup: restart
+    # the pod after rotating it.
+    existingSecret: ""
+    secretKey: token
+    # Run without a token. Anyone who can reach the Service can use every
+    # enabled tool. Only for local testing.
+    insecureNoAuth: false
+
+  # Held tools to turn on, or ["all"]. The chart grants only the Kubernetes
+  # permissions those tools need.
+  # Held tools: create_cluster, delete_cluster, scale_pool, add_catalog,
+  # remove_catalog, rotate_credentials, promote_environment.
+  enableTools: []
+
+  # Let execute_query run statements that change data (INSERT, DROP, ...).
+  allowWrites: false
+
+  # Public URL clients use to reach the server. Empty works behind most proxies.
+  baseURL: ""
+
+  # Extra namespaces the MCP server may read and update pools in
+  # (used by promote_environment).
+  extraNamespaces: []
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  serviceAccount:
+    annotations: {}
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+  extraArgs: []
+  extraEnv: []
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""

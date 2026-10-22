@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/meridian-io/meridian/mcp/internal/k8s"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"github.com/meridian-io/meridian/mcp/internal/k8s"
 )
 
 // ── promote_environment ───────────────────────────────────────────────────────
@@ -114,8 +114,13 @@ func deepCopySpec(spec map[string]interface{}) map[string]interface{} {
 	if spec == nil {
 		return nil
 	}
-	b, _ := json.Marshal(spec)
+	b, err := json.Marshal(spec)
+	if err != nil {
+		return nil
+	}
 	var copy map[string]interface{}
-	json.Unmarshal(b, &copy)
+	if err := json.Unmarshal(b, &copy); err != nil {
+		return nil
+	}
 	return copy
 }

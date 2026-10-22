@@ -77,13 +77,6 @@ func (c *queryCache) set(key string, result *trinoQueryResult, ttl time.Duration
 	c.setLocked(key, result, ttl)
 }
 
-// generation returns the invalidation count for a coordinator prefix.
-func (c *queryCache) generation(prefix string) uint64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.generations[prefix]
-}
-
 // setIfGeneration stores the result only if no invalidation happened since gen was read.
 func (c *queryCache) setIfGeneration(key, prefix string, gen uint64, result *trinoQueryResult, ttl time.Duration) {
 	c.mu.Lock()

@@ -179,7 +179,7 @@ func TestAWSProvider_ARNPath(t *testing.T) {
 	captured := ""
 	sm := &capturingMockSM{
 		secretString: aws.String(`{"connector.name":"mysql"}`),
-		onCall: func(id string) { captured = id },
+		onCall:       func(id string) { captured = id },
 	}
 	p := &AWSProvider{sm: sm}
 

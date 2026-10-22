@@ -1,0 +1,57 @@
+{{- if .Values.mcp.enabled }}
+{{- $tools := include "meridian.mcp.tools" . | fromJsonArray }}
+{{- $clusterVerbs := list "get" "list" "patch" }}
+{{- if has "create_cluster" $tools }}{{ $clusterVerbs = append $clusterVerbs "create" }}{{ end }}
+{{- if has "delete_cluster" $tools }}{{ $clusterVerbs = append $clusterVerbs "delete" }}{{ end }}
+{{- $poolVerbs := list "get" "list" }}
+{{- if or (has "scale_pool" $tools) (has "promote_environment" $tools) }}{{ $poolVerbs = append $poolVerbs "patch" }}{{ end }}
+{{- if has "promote_environment" $tools }}{{ $poolVerbs = append $poolVerbs "create" }}{{ end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "meridian.mcp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "meridian.labels" . | nindent 4 }}
+  {{- with .Values.mcp.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- range $ns := prepend (.Values.mcp.extraNamespaces | default list) (include "meridian.watchNamespace" $) | uniq }}
+---
+# Only the permissions the enabled MCP tools need.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "meridian.mcp.fullname" $ }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "meridian.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: ["meridian.io"]
+    resources: ["clusters"]
+    verbs: {{ toJson $clusterVerbs }}
+  - apiGroups: ["meridian.io"]
+    resources: ["clusterpools"]
+    verbs: {{ toJson $poolVerbs }}
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "meridian.mcp.fullname" $ }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "meridian.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "meridian.mcp.fullname" $ }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "meridian.mcp.fullname" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}

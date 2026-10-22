@@ -1,0 +1,135 @@
+{{- $op := .Values.operator }}
+{{- $cred := $op.credentials }}
+{{- if not (has $cred.provider (list "kubernetes" "vault" "aws-secrets-manager")) }}
+{{- fail "operator.credentials.provider must be kubernetes, vault or aws-secrets-manager" }}
+{{- end }}
+{{- if and (eq $cred.provider "vault") (not $cred.vault.address) }}
+{{- fail "operator.credentials.vault.address is required when the provider is vault" }}
+{{- end }}
+{{- if and (eq $cred.provider "aws-secrets-manager") (not $cred.aws.region) }}
+{{- fail "operator.credentials.aws.region is required when the provider is aws-secrets-manager" }}
+{{- end }}
+{{- if and $op.rest.enabled (not $op.rest.tlsSecretName) }}
+{{- fail "operator.rest.tlsSecretName is required when operator.rest.enabled is true" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "meridian.operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "meridian.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: {{ $op.replicas }}
+  selector:
+    matchLabels:
+      {{- include "meridian.operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "meridian.operator.selectorLabels" . | nindent 8 }}
+        {{- with $op.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $op.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "meridian.operator.fullname" . }}
+      securityContext:
+        {{- include "meridian.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $op.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: operator
+          image: "{{ $op.image.repository }}:{{ $op.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $op.image.pullPolicy }}
+          args:
+            - --namespace={{ include "meridian.watchNamespace" . }}
+            - --metrics-bind-address=:8081
+            - --health-probe-bind-address=:8082
+            - --cluster-concurrency={{ $op.clusterConcurrency }}
+            - --pool-max-creates-per-cycle={{ $op.poolMaxCreatesPerCycle }}
+            - --credential-provider={{ $cred.provider }}
+            {{- if eq $cred.provider "vault" }}
+            - --vault-addr={{ $cred.vault.address }}
+            - --vault-role={{ $cred.vault.role }}
+            - --vault-mount={{ $cred.vault.mount }}
+            {{- end }}
+            {{- if eq $cred.provider "aws-secrets-manager" }}
+            - --aws-region={{ $cred.aws.region }}
+            {{- end }}
+            {{- if $op.rest.enabled }}
+            - --rest-addr=:{{ $op.rest.port }}
+            - --tls-cert=/etc/meridian/rest-tls/tls.crt
+            - --tls-key=/etc/meridian/rest-tls/tls.key
+            - --tls-ca=/etc/meridian/rest-tls/ca.crt
+            {{- end }}
+            {{- with $op.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with $op.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 8081
+            - name: probes
+              containerPort: 8082
+            {{- if $op.rest.enabled }}
+            - name: rest
+              containerPort: {{ $op.rest.port }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml $op.resources | nindent 12 }}
+          securityContext:
+            {{- include "meridian.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if $op.rest.enabled }}
+            - name: rest-tls
+              mountPath: /etc/meridian/rest-tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if $op.rest.enabled }}
+        - name: rest-tls
+          secret:
+            secretName: {{ $op.rest.tlsSecretName }}
+        {{- end }}
+      {{- with $op.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $op.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $op.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

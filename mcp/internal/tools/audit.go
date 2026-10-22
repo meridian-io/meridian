@@ -7,8 +7,8 @@ import (
 	"sort"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"github.com/meridian-io/meridian/mcp/internal/k8s"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // AuditEvent represents a single management or query event.
