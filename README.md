@@ -2,7 +2,7 @@
 
 **The open-source Trino control plane and MCP server for Kubernetes.**
 
-**[getmeridian.dev](https://getmeridian.dev)** · **Latest release: [v1.3.0](https://github.com/meridian-io/meridian/releases/tag/v1.3.0)**
+**[getmeridian.dev](https://getmeridian.dev)** · **Latest release: [v1.4.0](https://github.com/meridian-io/meridian/releases/tag/v1.4.0)**
 
 Trino clusters take 30–90 seconds to provision. Meridian eliminates that wait: a hot standby pool keeps pre-provisioned clusters idle and ready, so a reservation completes in zero seconds. No cold starts for CI/CD jobs, batch workloads, or multi-tenant platforms.
 
@@ -18,7 +18,7 @@ Meridian has two parts:
 Installs the operator, its CRDs, and RBAC. Needs Kubernetes 1.26+ and Helm 3.
 
 ```bash
-helm install meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.3.0 \
+helm install meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.4.0 \
   --namespace meridian --create-namespace
 
 # or from a checkout of this repo
@@ -49,7 +49,8 @@ Optional parts are off by default:
 |---|---|---|
 | `watchNamespace` | release namespace | The operator's home namespace: leader election, REST API, credential Secrets, and the MCP server's default namespace |
 | `operator.rest.enabled`, `operator.rest.tlsSecretName` | off | mTLS reservation REST API. The Secret holds `tls.crt`, `tls.key`, and `ca.crt` (the CA that signs client certificates) |
-| `mcp.enabled`, `mcp.auth.existingSecret` | off | MCP server over SSE for remote AI clients. The Secret holds the bearer token |
+| `mcp.enabled`, `mcp.auth.existingSecret` | off | MCP server for remote AI clients at `/mcp`. The Secret holds the bearer token |
+| `mcp.replicas`, `mcp.legacySSE` | `1`, `true` | More than one replica needs `legacySSE: false` (the deprecated `/sse` endpoint keeps sessions in one pod) |
 | `mcp.enableTools` | `[]` | Held tools to turn on, or `["all"]`. The chart grants only the Kubernetes permissions those tools need |
 | `mcp.allowWrites` | `false` | Let `execute_query` change data |
 | `operator.credentials.provider` | `kubernetes` | `vault` or `aws-secrets-manager` for credential rotation |
@@ -58,7 +59,7 @@ To run the MCP server in the cluster:
 
 ```bash
 kubectl -n meridian create secret generic meridian-mcp-token --from-literal=token=$(openssl rand -hex 32)
-helm upgrade meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.3.0 -n meridian \
+helm upgrade meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.4.0 -n meridian \
   --reuse-values --set mcp.enabled=true --set mcp.auth.existingSecret=meridian-mcp-token
 ```
 
@@ -83,13 +84,13 @@ The `meridian` binary is an MCP server for Trino clusters managed by Meridian. I
 
 **Binary** (macOS arm64 shown; Linux and Windows builds are on the [releases page](https://github.com/meridian-io/meridian/releases)):
 ```bash
-curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.3.0/trino-mcp-server_1.3.0_darwin_arm64.tar.gz
+curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.4.0/trino-mcp-server_1.4.0_darwin_arm64.tar.gz
 tar xzf meridian.tar.gz && sudo mv meridian /usr/local/bin/
 ```
 
 **Docker:**
 ```bash
-docker pull ghcr.io/meridian-io/trino-mcp-server:v1.3.0
+docker pull ghcr.io/meridian-io/trino-mcp-server:v1.4.0
 ```
 
 ### Run
@@ -98,12 +99,21 @@ docker pull ghcr.io/meridian-io/trino-mcp-server:v1.3.0
 # stdio: for Claude Desktop and other local MCP clients
 meridian --transport stdio --namespace meridian
 
-# SSE: for remote or team use. A bearer token is required.
+# HTTP: for remote or team use, at http://<host>:8080/mcp. A bearer token is required.
 export MERIDIAN_MCP_TOKEN=$(openssl rand -hex 32)
-meridian --transport sse --addr :8080 --namespace meridian
+meridian --transport http --addr :8080 --namespace meridian
 
 # In-cluster: uses the pod's service account; token from a mounted Secret
-meridian --transport sse --addr :8080 --auth-token-file /etc/meridian/token
+meridian --transport http --addr :8080 --auth-token-file /etc/meridian/token
+```
+
+Remote mode follows the current MCP spec (2026-07-28): Streamable HTTP at `/mcp`, stateless, so any number of replicas can sit behind one load balancer. Older clients (MCP 2025 revisions) work on the same endpoint. Clients that only speak the old HTTP+SSE transport can still use `/sse` until v1.5; turn it off with `--legacy-sse=false`. `--transport sse` still works as a deprecated alias for `--transport http`.
+
+### Connect to Claude Code
+
+```bash
+claude mcp add --transport http meridian https://meridian.example.com/mcp \
+  --header "Authorization: Bearer $MERIDIAN_MCP_TOKEN"
 ```
 
 ### Connect to Claude Desktop
@@ -127,14 +137,16 @@ Each default can be relaxed with a flag:
 
 | Default | Why | To change |
 |---|---|---|
-| SSE requires a bearer token (`Authorization: Bearer <token>`, min 16 chars) | Without it, anyone who can reach the port can run queries | `MERIDIAN_MCP_TOKEN` or `--auth-token-file`. `--insecure-no-auth` is for local testing only |
+| HTTP mode requires a bearer token (`Authorization: Bearer <token>`, min 16 chars) | Without it, anyone who can reach the port can run queries | `MERIDIAN_MCP_TOKEN` or `--auth-token-file`. `--insecure-no-auth` is for local testing only |
 | `execute_query` is **read-only** (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, VALUES, TABLE) | An AI client shouldn't be able to `DROP` or `DELETE` by accident | `--allow-writes` |
 | 12 core tools are on. The 7 tools that change cluster or catalog config are **off** | Smaller blast radius | `--enable-tools=scale_pool,add_catalog` or `--enable-tools=all` |
-| `output_file` writes only into `--output-dir` (default: a per-user cache dir, e.g. `~/.cache/meridian/exports`) and is disabled in SSE mode | Remote callers must not write files onto the server | `--output-dir` |
+| `output_file` writes only into `--output-dir` (default: a per-user cache dir, e.g. `~/.cache/meridian/exports`) and is disabled in HTTP mode | Remote callers must not write files onto the server | `--output-dir` |
+| Requests carrying an `Origin` header are rejected (403) unless listed | Stops malicious web pages from driving the server (DNS rebinding) | `--allowed-origins=https://app.example.com`, for a web UI behind the same proxy. Not CORS |
+| Request bodies are capped at 1 MiB (413) | Limits memory use per request | — |
 
 The read-only check is a guardrail for AI clients. Trino access control remains the real security boundary. For example, connector table functions such as `system.query(...)` send SQL to the underlying database and are not inspected by Meridian.
 
-Other flags: `--base-url` (public URL behind a proxy), `--cache-max-entries` (default 1000), and `--log-format json|text`. In SSE mode, `/healthz` reports the process is alive and `/readyz` reports the Kubernetes API is reachable. Neither requires a token.
+Other flags: `--base-url` (public URL for legacy `/sse` clients behind a proxy), `--disable-localhost-protection` (only for a reverse proxy on the same host that forwards over localhost), `--cache-max-entries` (default 1000), and `--log-format json|text`. Tool failures (bad arguments, missing clusters) come back as tool results with `isError: true`, so the AI client can see and correct them. In HTTP mode, `/healthz` reports the process is alive and `/readyz` reports the Kubernetes API is reachable. Neither requires a token.
 
 ### Tools
 
@@ -202,7 +214,7 @@ Results written to /home/you/.cache/meridian/exports/orders.csv (1042 rows, 8 co
 query_id: 3f2a1b4c-...
 ```
 
-Directories and `..` are rejected, and CSV export is disabled in SSE mode.
+Directories and `..` are rejected, and CSV export is disabled in HTTP mode.
 
 ---
 
@@ -490,13 +502,14 @@ The same pattern works as tasks in Airflow, Dagster, or Prefect.
 
 | Area | Status | Description |
 |---|---|---|
-| MCP Server | ✅ Released | 19 tools (12 on by default), stdio + SSE, query cache with singleflight, query tagging, CSV export |
+| MCP Server | ✅ Released | 19 tools (12 on by default), stdio + Streamable HTTP (MCP spec 2026-07-28, v1.4), query cache with singleflight, query tagging, CSV export |
 | Kubernetes Operator | ✅ Released | Cluster lifecycle with health gating and `Degraded` recovery, hot standby pools, autoscaler, rolling image upgrades, age recycling, Trino Gateway integration, workload-labeled pools |
 | REST API | ✅ Released | Reserve, release, list, get, and scale over mTLS with per-client ownership checks |
 | Credential Rotation | ✅ Released | Rotation without cluster restart from Kubernetes Secrets, Vault, or AWS Secrets Manager |
 | Profile System | ✅ Released | Trino config and pod CPU/memory per profile, built-in and custom |
 | Production Hardening (v1.3) | ✅ Released | Secure-by-default MCP server, operator hardening, Helm chart, CI checks |
-| Metrics & E2E Tests | 📋 Planned | Prometheus metrics, Grafana dashboards, kind-based end-to-end tests against real Trino |
+| Current MCP Spec (v1.4) | ✅ Released | MCP 2026-07-28: Streamable HTTP at `/mcp`, stateless multi-replica, works with older clients |
+| Metrics & E2E Tests (v1.5) | 📋 Planned | Prometheus metrics, Grafana dashboards, kind-based end-to-end tests against real Trino |
 | Web UI | 📋 Planned | Pool visualization, catalog management, audit trail |
 
 ---

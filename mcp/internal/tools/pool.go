@@ -54,8 +54,9 @@ func ScalePoolHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequest) 
 		result := map[string]interface{}{
 			"poolName":         poolName,
 			"previousReplicas": currentReplicas,
-			"desiredReplicas":  int64(replicas),
-			"status":           strFromObj(updated.Object, "status", "phase"),
+			"desiredReplicas":  int64Field(updated.Object, "spec", "replicas"),
+			"readyReplicas":    int64Field(updated.Object, "status", "readyReplicas"),
+			"reservedReplicas": int64Field(updated.Object, "status", "reservedReplicas"),
 		}
 		out, _ := json.MarshalIndent(result, "", "  ")
 		return mcp.NewToolResultText(string(out)), nil
@@ -66,7 +67,7 @@ func ScalePoolHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequest) 
 
 func ListPoolsTool() mcp.Tool {
 	return mcp.NewTool("list_pools",
-		mcp.WithDescription("List all ClusterPools with their current replica count, desired replicas, and autoscaler settings."),
+		mcp.WithDescription("List all ClusterPools with desired replicas and current cluster counts (ready, reserved, pending, failed, degraded)."),
 		mcp.WithString("namespace", mcp.Description("Kubernetes namespace. Defaults to the configured namespace.")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
@@ -89,6 +90,11 @@ func ListPoolsHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequest) 
 			Name            string `json:"name"`
 			Namespace       string `json:"namespace"`
 			DesiredReplicas int64  `json:"desiredReplicas"`
+			Ready           int64  `json:"readyReplicas"`
+			Reserved        int64  `json:"reservedReplicas"`
+			Pending         int64  `json:"pendingReplicas"`
+			Failed          int64  `json:"failedReplicas"`
+			Degraded        int64  `json:"degradedReplicas"`
 			Profile         string `json:"profile,omitempty"`
 			Workload        string `json:"workload,omitempty"`
 		}
@@ -102,6 +108,11 @@ func ListPoolsHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequest) 
 				Namespace: str(meta, "namespace"),
 			}
 			ps.DesiredReplicas = int64Field(p.Object, "spec", "replicas")
+			ps.Ready = int64Field(p.Object, "status", "readyReplicas")
+			ps.Reserved = int64Field(p.Object, "status", "reservedReplicas")
+			ps.Pending = int64Field(p.Object, "status", "pendingReplicas")
+			ps.Failed = int64Field(p.Object, "status", "failedReplicas")
+			ps.Degraded = int64Field(p.Object, "status", "degradedReplicas")
 			if spec != nil {
 				tmpl, _ := spec["template"].(map[string]interface{})
 				if tmpl != nil {

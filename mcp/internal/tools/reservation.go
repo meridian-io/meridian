@@ -68,7 +68,7 @@ func reserveByName(ctx context.Context, c *k8s.Client, clusterName, clientID, re
 
 		// Idempotency: the same (clientId, reservationId) gets the same answer.
 		if ownedBy(cluster, clientID, reservationID) {
-			return reservationResult(clusterName, clientID, reservationID, strFromObj(cluster.Object, "status", "coordinatorURL"))
+			return reservationResult(clusterName, clientID, reservationID, strFromObj(cluster.Object, "status", "coordinatorUrl"))
 		}
 		if !isReservable(cluster) {
 			phase := strFromObj(cluster.Object, "status", "phase")
@@ -82,7 +82,7 @@ func reserveByName(ctx context.Context, c *k8s.Client, clusterName, clientID, re
 		if err != nil {
 			return nil, fmt.Errorf("patch cluster: %w", err)
 		}
-		return reservationResult(clusterName, clientID, reservationID, strFromObj(updated.Object, "status", "coordinatorURL"))
+		return reservationResult(clusterName, clientID, reservationID, strFromObj(updated.Object, "status", "coordinatorUrl"))
 	}
 	return nil, fmt.Errorf("cluster %q kept changing while reserving — retry shortly", clusterName)
 }
@@ -104,7 +104,7 @@ func reserveByWorkload(ctx context.Context, c *k8s.Client, workload, clientID, r
 		for i := range clusters {
 			if ownedBy(&clusters[i], clientID, reservationID) {
 				cl := &clusters[i]
-				return reservationResult(cl.GetName(), clientID, reservationID, strFromObj(cl.Object, "status", "coordinatorURL"))
+				return reservationResult(cl.GetName(), clientID, reservationID, strFromObj(cl.Object, "status", "coordinatorUrl"))
 			}
 		}
 
@@ -120,7 +120,7 @@ func reserveByWorkload(ctx context.Context, c *k8s.Client, workload, clientID, r
 		if err != nil {
 			return nil, fmt.Errorf("patch cluster: %w", err)
 		}
-		return reservationResult(best.GetName(), clientID, reservationID, strFromObj(updated.Object, "status", "coordinatorURL"))
+		return reservationResult(best.GetName(), clientID, reservationID, strFromObj(updated.Object, "status", "coordinatorUrl"))
 	}
 	return nil, fmt.Errorf("could not reserve a cluster for workload %q: too many concurrent reservations, retry shortly", workload)
 }

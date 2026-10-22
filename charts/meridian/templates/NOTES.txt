@@ -27,7 +27,10 @@ Clients need a certificate signed by the ca.crt in Secret {{ .Values.operator.re
 {{- end }}
 {{- if .Values.mcp.enabled }}
 
-MCP server (SSE): http://{{ include "meridian.mcp.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.mcp.service.port }}/sse
+MCP server: http://{{ include "meridian.mcp.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.mcp.service.port }}/mcp
+{{- if .Values.mcp.legacySSE }}
+Older clients can still use /sse (deprecated, removed in v1.5; set mcp.legacySSE=false to turn it off now).
+{{- end }}
 {{- if not .Values.mcp.auth.existingSecret }}
 
 WARNING: MCP authentication is DISABLED. Anyone who can reach the Service can use

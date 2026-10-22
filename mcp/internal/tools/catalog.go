@@ -104,9 +104,9 @@ func getCoordinatorURL(ctx context.Context, c *k8s.Client, clusterName, ns strin
 	if err != nil {
 		return "", fmt.Errorf("get cluster %q: %w", clusterName, err)
 	}
-	url := strFromObj(cluster.Object, "status", "coordinatorURL")
+	url := strFromObj(cluster.Object, "status", "coordinatorUrl")
 	if url == "" {
-		return "", fmt.Errorf("cluster %q has no coordinatorURL — is it Ready?", clusterName)
+		return "", fmt.Errorf("cluster %q has no coordinator URL — is it Ready?", clusterName)
 	}
 	return url, nil
 }

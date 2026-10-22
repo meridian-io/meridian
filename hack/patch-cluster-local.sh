@@ -10,7 +10,7 @@ kubectl patch cluster trino-local -n "$NS" --subresource=status --type=merge -p 
   "status": {
     "phase": "Idle",
     "ready": true,
-    "coordinatorURL": "http://localhost:8080",
+    "coordinatorUrl": "http://localhost:8080",
     "idleAt": "2026-02-28T10:00:00Z"
   }
 }'

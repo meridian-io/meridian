@@ -136,7 +136,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 // ── Kubernetes fixtures ──────────────────────────────────────────────────────
 
 type clusterFixture struct {
-	name, phase, coordinatorURL, idleAt, workload, clientID, reservationID string
+	name, phase, coordinatorUrl, idleAt, workload, clientID, reservationID string
 	ready                                                                  bool
 }
 
@@ -151,8 +151,8 @@ func clusterObj(f clusterFixture) *unstructured.Unstructured {
 		spec["reservationId"] = f.reservationID
 	}
 	status := map[string]any{"phase": f.phase, "ready": f.ready}
-	if f.coordinatorURL != "" {
-		status["coordinatorURL"] = f.coordinatorURL
+	if f.coordinatorUrl != "" {
+		status["coordinatorUrl"] = f.coordinatorUrl
 	}
 	if f.idleAt != "" {
 		status["idleAt"] = f.idleAt
