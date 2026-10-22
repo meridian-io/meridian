@@ -495,7 +495,7 @@ The same pattern works as tasks in Airflow, Dagster, or Prefect.
 | REST API | ✅ Released | Reserve, release, list, get, and scale over mTLS with per-client ownership checks |
 | Credential Rotation | ✅ Released | Rotation without cluster restart from Kubernetes Secrets, Vault, or AWS Secrets Manager |
 | Profile System | ✅ Released | Trino config and pod CPU/memory per profile, built-in and custom |
-| Production Hardening (v1.3) | 🔨 In progress | Secure-by-default MCP server, operator hardening, Helm chart, CI checks |
+| Production Hardening (v1.3) | ✅ Released | Secure-by-default MCP server, operator hardening, Helm chart, CI checks |
 | Metrics & E2E Tests | 📋 Planned | Prometheus metrics, Grafana dashboards, kind-based end-to-end tests against real Trino |
 | Web UI | 📋 Planned | Pool visualization, catalog management, audit trail |
 
