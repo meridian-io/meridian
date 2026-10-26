@@ -409,7 +409,8 @@ func (r *ClusterController) ensureCoordinatorDeployment(ctx context.Context, clu
 							"cp /etc/trino-static/coordinator.config.properties /etc/trino/config.properties && " +
 								"cp /etc/trino-static/jvm.config /etc/trino/jvm.config && " +
 								"cp /etc/trino-static/log.properties /etc/trino/log.properties && " +
-								"printf 'node.environment=production\\nnode.data-dir=/data/trino\\nnode.id=%s\\n' $(hostname) > /etc/trino/node.properties",
+								"printf 'node.environment=production\\nnode.data-dir=/data/trino\\nnode.id=%s\\n' $(hostname) > /etc/trino/node.properties && " +
+								copyCatalogsScript,
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "configmap-vol", MountPath: "/etc/trino-static", ReadOnly: true},
@@ -491,7 +492,8 @@ func (r *ClusterController) ensureWorkerDeployment(ctx context.Context, cluster 
 							"cp /etc/trino-static/worker.config.properties /etc/trino/config.properties && " +
 								"cp /etc/trino-static/jvm.config /etc/trino/jvm.config && " +
 								"cp /etc/trino-static/log.properties /etc/trino/log.properties && " +
-								"printf 'node.environment=production\\nnode.data-dir=/data/trino\\nnode.id=%s\\n' $(hostname) > /etc/trino/node.properties",
+								"printf 'node.environment=production\\nnode.data-dir=/data/trino\\nnode.id=%s\\n' $(hostname) > /etc/trino/node.properties && " +
+								copyCatalogsScript,
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "configmap-vol", MountPath: "/etc/trino-static", ReadOnly: true},
@@ -593,6 +595,9 @@ func (r *ClusterController) ensureClusterConfigMap(ctx context.Context, cluster 
 			"log.properties":                logProperties,
 		},
 	}
+	for _, name := range p.SampleCatalogs {
+		cm.Data[catalogKeyPrefix+name+".properties"] = "connector.name=" + name + "\n"
+	}
 	return r.Create(ctx, cm)
 }
 
@@ -616,6 +621,12 @@ func (r *ClusterController) reconcileRotation(ctx context.Context, cluster *meri
 		metrics.CredentialRotations.WithLabelValues(rotReq.Provider, metrics.ResultInvalid).Inc()
 		return r.clearAnnotationAndFail(ctx, cluster,
 			fmt.Sprintf("unknown credential provider %q — operator was not started with this provider", rotReq.Provider))
+	}
+
+	// Back off after failures. The failure's own status update triggers an
+	// immediate reconcile, so RequeueAfter alone would retry at once.
+	if wait := rotationBackoffRemaining(cluster); wait > 0 {
+		return ctrl.Result{RequeueAfter: wait}, nil
 	}
 
 	// Mark rotation in progress for visibility in kubectl / Web UI.
@@ -693,6 +704,21 @@ func (r *ClusterController) handleRotationFailure(ctx context.Context, cluster *
 
 	backoff := credentials.BackoffDuration(cluster.Status.RotationFailures)
 	return ctrl.Result{RequeueAfter: backoff}, nil
+}
+
+// rotationBackoffRemaining returns how long to wait before retrying a failed
+// rotation, measured from the last failure recorded in the condition.
+func rotationBackoffRemaining(cluster *meridianv1alpha1.Cluster) time.Duration {
+	if cluster.Status.RotationFailures == 0 {
+		return 0
+	}
+	for _, c := range cluster.Status.Conditions {
+		if c.Type == "CredentialRotation" && c.Reason == "RotationFailed" {
+			next := c.LastTransitionTime.Add(credentials.BackoffDuration(cluster.Status.RotationFailures))
+			return time.Until(next)
+		}
+	}
+	return 0
 }
 
 // clearAnnotationAndFail handles non-retriable errors (bad annotation, unknown provider).
@@ -790,3 +816,15 @@ func recordTransition(c *meridianv1alpha1.Cluster, from meridianv1alpha1.Cluster
 			Observe(time.Since(c.CreationTimestamp.Time).Seconds())
 	}
 }
+
+// Static catalogs (the sample catalogs) are stored in the cluster ConfigMap
+// as catalog-<name>.properties and copied into Trino's catalog directory by
+// the init containers, so they survive pod restarts. The init container runs
+// as root, so the directory is made writable for Trino, which stores
+// catalogs created at runtime (add_catalog, rotation) there.
+const (
+	catalogKeyPrefix   = "catalog-"
+	copyCatalogsScript = "mkdir -p /etc/trino/catalog && chmod 0777 /etc/trino/catalog && " +
+		"for f in /etc/trino-static/" + catalogKeyPrefix + "*.properties; do " +
+		"[ -e \"$f\" ] && cp \"$f\" /etc/trino/catalog/\"${f#/etc/trino-static/" + catalogKeyPrefix + "}\"; done; true"
+)
