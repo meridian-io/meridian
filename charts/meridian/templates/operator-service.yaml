@@ -15,4 +15,7 @@ spec:
     - name: rest
       port: {{ .Values.operator.rest.port }}
       targetPort: rest
+      {{- if and (eq .Values.operator.rest.service.type "NodePort") .Values.operator.rest.service.nodePort }}
+      nodePort: {{ .Values.operator.rest.service.nodePort }}
+      {{- end }}
 {{- end }}

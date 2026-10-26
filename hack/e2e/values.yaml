@@ -1,0 +1,18 @@
+# Chart values for the end-to-end suite. The suite adds the image tags.
+operator:
+  rest:
+    enabled: true
+    tlsSecretName: meridian-rest-tls
+    service:
+      type: NodePort
+      nodePort: 30443
+mcp:
+  enabled: true
+  replicas: 2
+  legacySSE: false
+  auth:
+    existingSecret: meridian-mcp-token
+  enableTools: ["all"]
+  service:
+    type: NodePort
+    nodePort: 30080

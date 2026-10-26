@@ -7,6 +7,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [Unreleased]
+
+### Added
+- **End-to-end tests in CI.** Every pull request runs Meridian on a kind cluster with real Trino:
+  - It installs the last published chart, upgrades it to the PR's build, and checks pools, MCP queries, `create_cluster` / `delete_cluster`, reservations over REST and MCP, scaling, coordinator crash recovery, credential rotation, and an MCP rolling restart with no failed calls.
+  - Run it locally with `make e2e`.
+- **Helm:** optional `nodePort` for the MCP and REST Services (`mcp.service.nodePort`, `operator.rest.service.nodePort`) when their type is `NodePort`.
+
+---
+
 ## [v1.4.0] — 2026-10-22
 
 The MCP server now follows the current MCP specification, revision 2026-07-28.

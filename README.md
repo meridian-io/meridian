@@ -422,6 +422,26 @@ helm install meridian charts/meridian -n meridian \
 
 CI runs build, vet, race tests, golangci-lint, and govulncheck for both modules, plus gofmt, a check that generated CRDs and RBAC match the Go types, and the chart lint.
 
+### 5. End-to-End Tests
+
+`make e2e` runs Meridian on a new kind cluster (`meridian-e2e`) with real Trino, the way a user would. It installs the last published chart, upgrades it to your checkout, and then checks:
+- pools filling with profile-sized pods
+- MCP queries on operator clusters
+- `create_cluster` / `delete_cluster`
+- reservations over REST and MCP
+- scaling
+- coordinator crash recovery
+- credential rotation
+- an MCP rolling restart with no failed calls
+
+```bash
+make e2e                    # needs kind, kubectl, helm and docker; ~20 minutes
+E2E_POOL_SIZE=1 make e2e    # if Docker has less than 12 GB of memory
+E2E_KEEP=1 make e2e         # keep the kind cluster afterwards for debugging
+```
+
+Every pull request runs the same suite in CI. On failure, the operator, MCP and Trino logs are saved to `e2e-artifacts/`.
+
 ## Manual Test Cases
 
 Run these in Claude Desktop with the local environment running.
