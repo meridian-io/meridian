@@ -28,8 +28,8 @@ Clients need a certificate signed by the ca.crt in Secret {{ .Values.operator.re
 {{- if .Values.mcp.enabled }}
 
 MCP server: http://{{ include "meridian.mcp.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.mcp.service.port }}/mcp
-{{- if .Values.mcp.legacySSE }}
-Older clients can still use /sse (deprecated, removed in v1.5; set mcp.legacySSE=false to turn it off now).
+{{- if .Values.mcp.baseURL }}
+Note: mcp.baseURL has no effect since v1.5 (it was only used by the removed /sse endpoint). You can remove it.
 {{- end }}
 {{- if not .Values.mcp.auth.existingSecret }}
 

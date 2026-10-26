@@ -50,7 +50,7 @@ Optional parts are off by default:
 | `watchNamespace` | release namespace | The operator's home namespace: leader election, REST API, credential Secrets, and the MCP server's default namespace |
 | `operator.rest.enabled`, `operator.rest.tlsSecretName` | off | mTLS reservation REST API. The Secret holds `tls.crt`, `tls.key`, and `ca.crt` (the CA that signs client certificates) |
 | `mcp.enabled`, `mcp.auth.existingSecret` | off | MCP server for remote AI clients at `/mcp`. The Secret holds the bearer token |
-| `mcp.replicas`, `mcp.legacySSE` | `1`, `true` | More than one replica needs `legacySSE: false` (the deprecated `/sse` endpoint keeps sessions in one pod) |
+| `mcp.replicas` | `1` | Any number: `/mcp` is stateless, so every replica can answer every request |
 | `mcp.enableTools` | `[]` | Held tools to turn on, or `["all"]`. The chart grants only the Kubernetes permissions those tools need |
 | `mcp.allowWrites` | `false` | Let `execute_query` change data |
 | `operator.credentials.provider` | `kubernetes` | `vault` or `aws-secrets-manager` for credential rotation |
@@ -107,7 +107,7 @@ meridian --transport http --addr :8080 --namespace meridian
 meridian --transport http --addr :8080 --auth-token-file /etc/meridian/token
 ```
 
-Remote mode follows the current MCP spec (2026-07-28): Streamable HTTP at `/mcp`, stateless, so any number of replicas can sit behind one load balancer. Older clients (MCP 2025 revisions) work on the same endpoint. Clients that only speak the old HTTP+SSE transport can still use `/sse` until v1.5; turn it off with `--legacy-sse=false`. `--transport sse` still works as a deprecated alias for `--transport http`.
+Remote mode follows the current MCP spec (2026-07-28): Streamable HTTP at `/mcp`, stateless, so any number of replicas can sit behind one load balancer. Older clients (MCP 2025 revisions) work on the same endpoint. The old HTTP+SSE transport (`/sse`, 2024-11-05) was removed in v1.5; clients that only speak it need an update.
 
 ### Connect to Claude Code
 
@@ -146,7 +146,7 @@ Each default can be relaxed with a flag:
 
 The read-only check is a guardrail for AI clients. Trino access control remains the real security boundary. For example, connector table functions such as `system.query(...)` send SQL to the underlying database and are not inspected by Meridian.
 
-Other flags: `--base-url` (public URL for legacy `/sse` clients behind a proxy), `--disable-localhost-protection` (only for a reverse proxy on the same host that forwards over localhost), `--cache-max-entries` (default 1000), and `--log-format json|text`. Tool failures (bad arguments, missing clusters) come back as tool results with `isError: true`, so the AI client can see and correct them. In HTTP mode, `/healthz` reports the process is alive and `/readyz` reports the Kubernetes API is reachable. Neither requires a token.
+Other flags: `--disable-localhost-protection` (only for a reverse proxy on the same host that forwards over localhost), `--cache-max-entries` (default 1000), and `--log-format json|text`. Tool failures (bad arguments, missing clusters) come back as tool results with `isError: true`, so the AI client can see and correct them. In HTTP mode, `/healthz` reports the process is alive and `/readyz` reports the Kubernetes API is reachable. Neither requires a token.
 
 ### Tools
 
@@ -528,7 +528,7 @@ The same pattern works as tasks in Airflow, Dagster, or Prefect.
 | Credential Rotation | ✅ Released | Rotation without cluster restart from Kubernetes Secrets, Vault, or AWS Secrets Manager |
 | Profile System | ✅ Released | Trino config and pod CPU/memory per profile, built-in and custom |
 | Production Hardening (v1.3) | ✅ Released | Secure-by-default MCP server, operator hardening, Helm chart, CI checks |
-| Current MCP Spec (v1.4) | ✅ Released | MCP 2026-07-28: Streamable HTTP at `/mcp`, stateless multi-replica, works with older clients |
+| Current MCP Spec (v1.4) | ✅ Released | MCP 2026-07-28: Streamable HTTP at `/mcp`, stateless multi-replica, works with older clients. Legacy `/sse` removed in v1.5 |
 | Metrics & E2E Tests (v1.5) | 📋 Planned | Prometheus metrics, Grafana dashboards, kind-based end-to-end tests against real Trino |
 | Web UI | 📋 Planned | Pool visualization, catalog management, audit trail |
 

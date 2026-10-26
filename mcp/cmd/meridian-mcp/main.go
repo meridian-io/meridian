@@ -53,13 +53,15 @@ func run() error {
 		shutdownDelay   time.Duration
 	)
 
-	flag.StringVar(&transport, "transport", "stdio", "Transport: stdio, or http for remote clients (Streamable HTTP at /mcp). \"sse\" is a deprecated alias for http")
+	flag.StringVar(&transport, "transport", "stdio", "Transport: stdio, or http for remote clients (Streamable HTTP at /mcp)")
 	flag.StringVar(&addr, "addr", ":8080", "Address to listen on when transport=http")
-	flag.BoolVar(&legacySSE, "legacy-sse", true, "Also serve the deprecated HTTP+SSE transport (/sse and /message) for older clients. Will be removed in v1.5")
+	// Removed in v1.5 with the HTTP+SSE transport. Still accepted so that
+	// deployments which set --legacy-sse=false or --base-url keep starting.
+	flag.BoolVar(&legacySSE, "legacy-sse", false, "Removed in v1.5 (the HTTP+SSE transport is gone). Only false is accepted")
 	flag.StringVar(&allowedOrigins, "allowed-origins", "", "Comma-separated origins accepted when a request carries an Origin header, e.g. a web UI behind the same proxy (https://app.example.com). Any other Origin gets 403. Not CORS: cross-origin browser calls are not supported")
 	flag.DurationVar(&shutdownDelay, "shutdown-delay", 5*time.Second, "In http mode, keep serving this long after SIGTERM (reporting not ready) so load balancers stop sending new requests before the server closes")
 	flag.BoolVar(&noLocalhostProt, "disable-localhost-protection", false, "Accept loopback connections whose Host header isn't localhost (only for a reverse proxy on the same host)")
-	flag.StringVar(&baseURL, "base-url", "", "Public URL clients use to reach this server (e.g. https://meridian.example.com). Empty sends a relative message endpoint, which works behind most proxies.")
+	flag.StringVar(&baseURL, "base-url", "", "Removed in v1.5 (only used by the HTTP+SSE transport). Ignored")
 	flag.StringVar(&namespace, "namespace", "meridian", "Default Kubernetes namespace")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig (defaults to in-cluster, then ~/.kube/config)")
 	flag.StringVar(&enableTools, "enable-tools", "", "Comma-separated held tools to enable, or \"all\". Held tools: create_cluster, delete_cluster, scale_pool, add_catalog, remove_catalog, rotate_credentials, promote_environment")
@@ -77,14 +79,18 @@ func run() error {
 		return nil
 	}
 
-	sseAlias := transport == "sse"
-	if sseAlias {
-		transport = "http"
+	if transport == "sse" {
+		return errors.New("--transport sse was removed in v1.5: use --transport http (Streamable HTTP at /mcp). Clients connect to http(s)://<host>/mcp")
+	}
+	if legacySSE {
+		return errors.New("--legacy-sse was removed in v1.5: the HTTP+SSE transport (/sse) is gone. Remove the flag and point clients at /mcp")
 	}
 	setupLogging(logFormat, transport)
-	if sseAlias {
-		slog.Warn("--transport sse is deprecated; use --transport http (Streamable HTTP at /mcp)")
-	}
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "legacy-sse" || f.Name == "base-url" {
+			slog.Warn("flag has no effect since v1.5 and will be rejected in a future release; remove it", "flag", "--"+f.Name)
+		}
+	})
 
 	extra, err := mcpserver.ParseEnableTools(enableTools)
 	if err != nil {
@@ -150,9 +156,7 @@ func run() error {
 		}
 		return serveHTTP(ctx, s, httpOptions{
 			addr:            addr,
-			baseURL:         baseURL,
 			token:           token,
-			legacySSE:       legacySSE,
 			allowedOrigins:  splitList(allowedOrigins),
 			noLocalhostProt: noLocalhostProt,
 			ready:           k8sClient.Ready,
@@ -166,9 +170,7 @@ func run() error {
 
 type httpOptions struct {
 	addr            string
-	baseURL         string
 	token           string
-	legacySSE       bool
 	allowedOrigins  []string
 	noLocalhostProt bool
 	ready           mcpserver.ReadyFunc
@@ -176,8 +178,7 @@ type httpOptions struct {
 }
 
 // serveHTTP serves Streamable HTTP at /mcp (stateless, so any replica can
-// answer any request) and, unless disabled, the deprecated HTTP+SSE transport
-// at /sse and /message for older clients.
+// answer any request).
 func serveHTTP(ctx context.Context, s *server.MCPServer, o httpOptions) error {
 	httpSrv := &http.Server{
 		Addr:              o.addr,
@@ -193,23 +194,16 @@ func serveHTTP(ctx context.Context, s *server.MCPServer, o httpOptions) error {
 		}
 		return o.ready(ctx)
 	}
-	handler, sse := mcpserver.NewHTTPHandler(s, mcpserver.HTTPOptions{
+	httpSrv.Handler = mcpserver.NewHTTPHandler(s, mcpserver.HTTPOptions{
 		Token:                      o.token,
 		AllowedOrigins:             o.allowedOrigins,
-		LegacySSE:                  o.legacySSE,
-		BaseURL:                    o.baseURL,
 		DisableLocalhostProtection: o.noLocalhostProt,
 		Ready:                      ready,
-		HTTPServer:                 httpSrv,
 	})
-	httpSrv.Handler = handler
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("listening", "addr", o.addr, "endpoint", "/mcp", "legacy_sse", o.legacySSE)
-		if o.legacySSE {
-			slog.Warn("serving the deprecated HTTP+SSE transport at /sse; it will be removed in v1.5 (disable now with --legacy-sse=false)")
-		}
+		slog.Info("listening", "addr", o.addr, "endpoint", "/mcp")
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -236,14 +230,6 @@ func serveHTTP(ctx context.Context, s *server.MCPServer, o httpOptions) error {
 	slog.Info("shutting down", "timeout", shutdownTimeout)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	// The SSE server closes its long-lived streams first, then shuts down
-	// httpSrv (it was given httpSrv above).
-	if sse != nil {
-		if err := sse.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("shutdown: %w", err)
-		}
-		return nil
-	}
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}

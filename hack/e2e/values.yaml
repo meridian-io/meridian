@@ -9,6 +9,7 @@ operator:
 mcp:
   enabled: true
   replicas: 2
+  # Needed by the v1.4.x chart the suite upgrades from; ignored since v1.5.
   legacySSE: false
   auth:
     existingSecret: meridian-mcp-token

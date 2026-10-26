@@ -79,13 +79,7 @@ mcp:
     pullPolicy: IfNotPresent
 
   # The /mcp endpoint is stateless, so any replica can serve any request.
-  # More than one replica requires legacySSE: false, because legacy SSE
-  # sessions live in one pod's memory.
   replicas: 1
-
-  # Also serve the deprecated HTTP+SSE transport (/sse) for older clients.
-  # Deprecated: will be removed in v1.5.
-  legacySSE: true
 
   # Origins accepted when a request carries an Origin header, e.g. a web UI
   # behind the same proxy: ["https://app.example.com"]. Any other Origin gets
@@ -111,8 +105,6 @@ mcp:
   # Let execute_query run statements that change data (INSERT, DROP, ...).
   allowWrites: false
 
-  # Public URL clients use to reach the server. Empty works behind most proxies.
-  baseURL: ""
 
   # Extra namespaces the MCP server may read and update pools in
   # (used by promote_environment).

@@ -7,6 +7,28 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [Unreleased]
+
+### Upgrade notes (breaking)
+- **The deprecated HTTP+SSE transport is removed**, as announced in v1.4.
+  - The `/sse` and `/message` endpoints are gone. Clients connect to `/mcp` (Streamable HTTP), which every current client supports, including Claude Code, Claude Desktop, Cursor, and MCP 2025-era clients.
+  - Only clients that speak just the 2024-11-05 transport stop working.
+- **`--transport sse` now fails at startup** with a message to use `--transport http`. If you run the image with your own arguments, change `sse` to `http`. The image's default command already uses `http`.
+- **`--legacy-sse=true` fails at startup.**
+  - `--legacy-sse=false` and `--base-url` still start, with a warning, and will be rejected in a later release. Remove them.
+- **Helm:**
+  - `mcp.legacySSE: true` fails with a message to remove it; `false` is accepted.
+  - `mcp.baseURL` is gone and ignored, with a note in the install output.
+  - `mcp.replicas` can be any number.
+
+### Removed
+- Legacy HTTP+SSE transport (`/sse`, `/message`), its `--base-url` option, and the chart's one-replica limit that went with it.
+
+### Fixed
+- The MCP Docker image's default command used `--transport sse`. It now uses `--transport http`.
+
+---
+
 ## [v1.4.1] — 2026-10-26
 
 Fixes two operator bugs found by the new end-to-end tests on a real cluster.

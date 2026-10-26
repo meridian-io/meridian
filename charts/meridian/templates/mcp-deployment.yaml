@@ -6,8 +6,8 @@
 {{- if and (not $mcp.auth.existingSecret) (not $mcp.auth.insecureNoAuth) }}
 {{- fail "mcp.auth.existingSecret is required when mcp.enabled is true (create a Secret holding a bearer token), or set mcp.auth.insecureNoAuth=true for local testing only" }}
 {{- end }}
-{{- if and (gt (int $mcp.replicas) 1) $mcp.legacySSE }}
-{{- fail "mcp.replicas > 1 requires mcp.legacySSE=false: legacy SSE sessions live in one pod's memory" }}
+{{- if $mcp.legacySSE }}
+{{- fail "mcp.legacySSE was removed in v1.5 along with the deprecated /sse endpoint. Remove it from your values and point clients at /mcp" }}
 {{- end }}
 {{- $tools := include "meridian.mcp.tools" . | fromJsonArray }}
 apiVersion: apps/v1
@@ -54,7 +54,6 @@ spec:
           args:
             - --transport=http
             - --addr=:8080
-            - --legacy-sse={{ $mcp.legacySSE }}
             {{- with $mcp.allowedOrigins }}
             - --allowed-origins={{ join "," . }}
             {{- end }}
@@ -69,9 +68,6 @@ spec:
             {{- end }}
             {{- if $mcp.allowWrites }}
             - --allow-writes
-            {{- end }}
-            {{- with $mcp.baseURL }}
-            - --base-url={{ . }}
             {{- end }}
             {{- with $mcp.extraArgs }}
             {{- toYaml . | nindent 12 }}
