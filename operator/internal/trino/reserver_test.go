@@ -232,3 +232,30 @@ func TestReserver_Idempotent(t *testing.T) {
 		t.Errorf("expected existing cluster pool-01, got %q", result.ClusterName)
 	}
 }
+
+// TestReserver_RetryBeforeStatusUpdate verifies that repeating a reservation
+// before the cluster controller has set status.reservedAt returns the same
+// cluster. A client retrying after a timeout hits this window; it used to
+// panic and drop the connection.
+func TestReserver_RetryBeforeStatusUpdate(t *testing.T) {
+	cluster := idleCluster("pool-01", "meridian", "default", time.Now().Add(-5*time.Minute))
+	c := newReserverClient(newReserverScheme(), cluster)
+	reserver := NewClusterReserver(c)
+	req := ReservationRequest{ClientID: "client-abc", ReservationID: "res-001", Profile: "default", Namespace: "meridian"}
+
+	first, err := reserver.Reserve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first reserve: %v", err)
+	}
+	// No controller runs here, so status.reservedAt is still unset.
+	again, err := reserver.Reserve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("repeated reserve: %v", err)
+	}
+	if again.ClusterName != first.ClusterName || again.CoordinatorURL != first.CoordinatorURL {
+		t.Errorf("repeated reserve returned %+v, want %+v", again, first)
+	}
+	if again.ReservedAt.IsZero() {
+		t.Error("repeated reserve returned a zero ReservedAt")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -14,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
@@ -94,36 +96,36 @@ func TestClusterController_EmptyToPending(t *testing.T) {
 	}
 }
 
-// TestClusterController_PendingToIdle verifies that a healthy coordinator transitions
-// the cluster from Pending to Idle.
-func TestClusterController_PendingToIdle(t *testing.T) {
-	cluster := newCluster("test-cluster", "meridian", meridianv1alpha1.ClusterPhasePending)
-	ready := int32(1)
-	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-cluster-coordinator",
-			Namespace: "meridian",
-		},
-		Status: appsv1.DeploymentStatus{ReadyReplicas: ready},
+// readyDeployment is a coordinator or worker Deployment with the given ready replicas.
+func readyDeployment(cluster, role string, ready int32) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: cluster + "-" + role, Namespace: "meridian"},
+		Status:     appsv1.DeploymentStatus{ReadyReplicas: ready},
 	}
+}
+
+func reconcileOnce(t *testing.T, objs ...client.Object) *meridianv1alpha1.Cluster {
+	t.Helper()
 	s := newTestScheme()
-
-	c := fake.NewClientBuilder().
-		WithScheme(s).
-		WithObjects(cluster, dep).
-		WithStatusSubresource(cluster).
-		Build()
-
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).WithStatusSubresource(objs[0]).Build()
 	r := &ClusterController{Client: c, Scheme: s}
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: "test-cluster", Namespace: "meridian"},
-	})
-	if err != nil {
+	key := types.NamespacedName{Name: objs[0].GetName(), Namespace: "meridian"}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
 	updated := &meridianv1alpha1.Cluster{}
-	_ = c.Get(context.Background(), types.NamespacedName{Name: "test-cluster", Namespace: "meridian"}, updated)
+	_ = c.Get(context.Background(), key, updated)
+	return updated
+}
+
+// TestClusterController_PendingToIdle verifies that a cluster whose coordinator
+// and worker pods are Ready (Trino has started) moves from Pending to Idle.
+func TestClusterController_PendingToIdle(t *testing.T) {
+	updated := reconcileOnce(t,
+		newCluster("test-cluster", "meridian", meridianv1alpha1.ClusterPhasePending),
+		readyDeployment("test-cluster", "coordinator", 1),
+		readyDeployment("test-cluster", "worker", 1),
+	)
 	if updated.Status.Phase != meridianv1alpha1.ClusterPhaseIdle {
 		t.Errorf("expected phase Idle, got %q", updated.Status.Phase)
 	}
@@ -132,6 +134,64 @@ func TestClusterController_PendingToIdle(t *testing.T) {
 	}
 	if updated.Status.IdleAt == nil {
 		t.Error("expected IdleAt to be set")
+	}
+}
+
+// TestClusterController_PendingWaitsForWorker verifies that a Ready coordinator
+// alone is not enough: the coordinator does not run queries itself.
+func TestClusterController_PendingWaitsForWorker(t *testing.T) {
+	updated := reconcileOnce(t,
+		newCluster("test-cluster", "meridian", meridianv1alpha1.ClusterPhasePending),
+		readyDeployment("test-cluster", "coordinator", 1),
+		readyDeployment("test-cluster", "worker", 0),
+	)
+	if updated.Status.Phase != meridianv1alpha1.ClusterPhasePending {
+		t.Errorf("expected phase to remain Pending without a ready worker, got %q", updated.Status.Phase)
+	}
+}
+
+// TestClusterController_DegradedRecoversOnlyWhenReady verifies that a Degraded
+// cluster returns to Idle only when both roles are Ready again.
+func TestClusterController_DegradedRecoversOnlyWhenReady(t *testing.T) {
+	for _, tc := range []struct {
+		workers int32
+		want    meridianv1alpha1.ClusterPhase
+	}{
+		{0, meridianv1alpha1.ClusterPhaseDegraded},
+		{1, meridianv1alpha1.ClusterPhaseIdle},
+	} {
+		updated := reconcileOnce(t,
+			newCluster("test-cluster", "meridian", meridianv1alpha1.ClusterPhaseDegraded),
+			readyDeployment("test-cluster", "coordinator", 1),
+			readyDeployment("test-cluster", "worker", tc.workers),
+		)
+		if updated.Status.Phase != tc.want {
+			t.Errorf("ready workers=%d: phase %q, want %q", tc.workers, updated.Status.Phase, tc.want)
+		}
+	}
+}
+
+// TestClusterController_TrinoPodsHaveReadinessProbe verifies that both roles
+// get a readiness probe, so Ready means Trino has finished starting.
+func TestClusterController_TrinoPodsHaveReadinessProbe(t *testing.T) {
+	s := newTestScheme()
+	cluster := newCluster("test-cluster", "meridian", meridianv1alpha1.ClusterPhaseEmpty)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cluster).WithStatusSubresource(cluster).Build()
+	r := &ClusterController{Client: c, Scheme: s}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-cluster", Namespace: "meridian"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"coordinator", "worker"} {
+		dep := &appsv1.Deployment{}
+		if err := c.Get(context.Background(), types.NamespacedName{Name: "test-cluster-" + role, Namespace: "meridian"}, dep); err != nil {
+			t.Fatal(err)
+		}
+		probe := dep.Spec.Template.Spec.Containers[0].ReadinessProbe
+		if probe == nil || probe.Exec == nil || !strings.Contains(strings.Join(probe.Exec.Command, " "), trinoHealthCheck) {
+			t.Errorf("%s: readiness probe %+v does not run %s", role, probe, trinoHealthCheck)
+		}
 	}
 }
 

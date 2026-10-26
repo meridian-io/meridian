@@ -7,7 +7,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
-## [Unreleased]
+## [v1.4.1] — 2026-10-26
+
+Fixes two operator bugs found by the new end-to-end tests on a real cluster.
+
+### Fixed
+- **Clusters were marked Idle before Trino could run queries.**
+  - What happened: a cluster became Idle as soon as its coordinator container started. Queries on a freshly Idle cluster failed for about 30 seconds in testing ("connection refused", then "Trino server is still initializing").
+  - The fix: Trino pods now have a readiness probe that runs the image's own `/usr/lib/trino/bin/health-check`. A cluster becomes Idle only when its coordinator and at least one worker have finished starting. Images without that script keep the old behaviour.
+  - Scope: applies to clusters created after the upgrade. Existing clusters are unchanged; delete idle ones to have the pool replace them.
+- **Retrying a REST reservation dropped the connection.**
+  - What happened: repeating `POST /api/v1/clusters/reservations` before the operator recorded the first one (usually under a second) crashed the request. The client got no response, while the cluster stayed reserved.
+  - The fix: a repeated request now returns the same cluster, as documented.
 
 ### Added
 - **End-to-end tests in CI.** Every pull request runs Meridian on a kind cluster with real Trino:
