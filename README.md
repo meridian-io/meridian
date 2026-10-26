@@ -2,7 +2,7 @@
 
 **The open-source Trino control plane and MCP server for Kubernetes.**
 
-**[getmeridian.dev](https://getmeridian.dev)** · **Latest release: [v1.4.0](https://github.com/meridian-io/meridian/releases/tag/v1.4.0)**
+**[getmeridian.dev](https://getmeridian.dev)** · **Latest release: [v1.4.1](https://github.com/meridian-io/meridian/releases/tag/v1.4.1)**
 
 Trino clusters take 30–90 seconds to provision. Meridian eliminates that wait: a hot standby pool keeps pre-provisioned clusters idle and ready, so a reservation completes in zero seconds. No cold starts for CI/CD jobs, batch workloads, or multi-tenant platforms.
 
@@ -18,7 +18,7 @@ Meridian has two parts:
 Installs the operator, its CRDs, and RBAC. Needs Kubernetes 1.26+ and Helm 3.
 
 ```bash
-helm install meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.4.0 \
+helm install meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.4.1 \
   --namespace meridian --create-namespace
 
 # or from a checkout of this repo
@@ -59,7 +59,7 @@ To run the MCP server in the cluster:
 
 ```bash
 kubectl -n meridian create secret generic meridian-mcp-token --from-literal=token=$(openssl rand -hex 32)
-helm upgrade meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.4.0 -n meridian \
+helm upgrade meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.4.1 -n meridian \
   --reuse-values --set mcp.enabled=true --set mcp.auth.existingSecret=meridian-mcp-token
 ```
 
@@ -84,13 +84,13 @@ The `meridian` binary is an MCP server for Trino clusters managed by Meridian. I
 
 **Binary** (macOS arm64 shown; Linux and Windows builds are on the [releases page](https://github.com/meridian-io/meridian/releases)):
 ```bash
-curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.4.0/trino-mcp-server_1.4.0_darwin_arm64.tar.gz
+curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.4.1/trino-mcp-server_1.4.1_darwin_arm64.tar.gz
 tar xzf meridian.tar.gz && sudo mv meridian /usr/local/bin/
 ```
 
 **Docker:**
 ```bash
-docker pull ghcr.io/meridian-io/trino-mcp-server:v1.4.0
+docker pull ghcr.io/meridian-io/trino-mcp-server:v1.4.1
 ```
 
 ### Run

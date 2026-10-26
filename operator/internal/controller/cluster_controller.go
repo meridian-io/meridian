@@ -157,7 +157,7 @@ func (r *ClusterController) reconcileHealthCheck(ctx context.Context, cluster *m
 			fmt.Sprintf("coordinator not ready after %v — marking Failed for replacement", pendingTimeout))
 	}
 
-	healthy, err := r.isClusterHealthy(ctx, cluster)
+	healthy, err := r.isClusterReady(ctx, cluster)
 	if err != nil {
 		log.Error(err, "health check error", "cluster", cluster.Name)
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
@@ -236,7 +236,7 @@ func (r *ClusterController) reconcileDegraded(ctx context.Context, cluster *meri
 		log.Error(err, "failed to re-create coordinator deployment", "cluster", cluster.Name)
 	}
 
-	healthy, err := r.isClusterHealthy(ctx, cluster)
+	healthy, err := r.isClusterReady(ctx, cluster)
 	if err != nil {
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
@@ -268,9 +268,27 @@ func (r *ClusterController) reconcileReserved(ctx context.Context, cluster *meri
 
 // isClusterHealthy checks that the coordinator deployment has at least one ready replica.
 func (r *ClusterController) isClusterHealthy(ctx context.Context, cluster *meridianv1alpha1.Cluster) (bool, error) {
+	return r.deploymentReady(ctx, cluster, "coordinator")
+}
+
+// isClusterReady gates the move to Idle: the coordinator and at least one
+// worker have passed their readiness probe, i.e. Trino has finished starting.
+// Workers are needed because the coordinator does not run queries itself
+// (node-scheduler.include-coordinator=false).
+func (r *ClusterController) isClusterReady(ctx context.Context, cluster *meridianv1alpha1.Cluster) (bool, error) {
+	for _, role := range []string{"coordinator", "worker"} {
+		ok, err := r.deploymentReady(ctx, cluster, role)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func (r *ClusterController) deploymentReady(ctx context.Context, cluster *meridianv1alpha1.Cluster, role string) (bool, error) {
 	dep := &appsv1.Deployment{}
 	key := types.NamespacedName{
-		Name:      fmt.Sprintf("%s-coordinator", cluster.Name),
+		Name:      fmt.Sprintf("%s-%s", cluster.Name, role),
 		Namespace: cluster.Namespace,
 	}
 	if err := r.Get(ctx, key, dep); err != nil {
@@ -280,6 +298,25 @@ func (r *ClusterController) isClusterHealthy(ctx context.Context, cluster *merid
 		return false, err
 	}
 	return dep.Status.ReadyReplicas >= 1, nil
+}
+
+// trinoHealthCheck ships in the official trinodb/trino images. It passes once
+// /v1/info reports "starting": false, so a pod is Ready only when Trino can
+// accept queries. Images without the script keep the old behaviour (Ready as
+// soon as the container runs) instead of never becoming Ready.
+const trinoHealthCheck = "/usr/lib/trino/bin/health-check"
+
+func trinoReadinessProbe() *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{Command: []string{"sh", "-c",
+				"if [ -x " + trinoHealthCheck + " ]; then exec " + trinoHealthCheck + "; fi"}},
+		},
+		InitialDelaySeconds: 5,
+		PeriodSeconds:       5,
+		TimeoutSeconds:      5,
+		FailureThreshold:    3,
+	}
 }
 
 // ensureCoordinatorRunning recovers from coordinator pod eviction.
@@ -371,10 +408,11 @@ func (r *ClusterController) ensureCoordinatorDeployment(ctx context.Context, clu
 						},
 					}},
 					Containers: []corev1.Container{{
-						Name:      "trino-coordinator",
-						Image:     cluster.Spec.Image,
-						Ports:     []corev1.ContainerPort{{ContainerPort: 8080}},
-						Resources: p.Coordinator.resourceRequirements(),
+						Name:           "trino-coordinator",
+						Image:          cluster.Spec.Image,
+						Ports:          []corev1.ContainerPort{{ContainerPort: 8080}},
+						Resources:      p.Coordinator.resourceRequirements(),
+						ReadinessProbe: trinoReadinessProbe(),
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "trino-etc", MountPath: "/etc/trino"},
 						},
@@ -452,9 +490,10 @@ func (r *ClusterController) ensureWorkerDeployment(ctx context.Context, cluster 
 						},
 					}},
 					Containers: []corev1.Container{{
-						Name:      "trino-worker",
-						Image:     cluster.Spec.Image,
-						Resources: p.Worker.resourceRequirements(),
+						Name:           "trino-worker",
+						Image:          cluster.Spec.Image,
+						Resources:      p.Worker.resourceRequirements(),
+						ReadinessProbe: trinoReadinessProbe(),
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "trino-etc", MountPath: "/etc/trino"},
 						},

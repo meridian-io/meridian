@@ -64,10 +64,16 @@ func (r *ClusterReserver) Reserve(ctx context.Context, req ReservationRequest) (
 		return nil, err
 	}
 	if existing != nil {
+		// status.reservedAt is set by the cluster controller shortly after
+		// the reservation; a retry can arrive before that.
+		reservedAt := time.Now()
+		if existing.Status.ReservedAt != nil {
+			reservedAt = existing.Status.ReservedAt.Time
+		}
 		return &ReservationResult{
 			ClusterName:    existing.Name,
 			CoordinatorURL: existing.Status.CoordinatorURL,
-			ReservedAt:     existing.Status.ReservedAt.Time,
+			ReservedAt:     reservedAt,
 		}, nil
 	}
 
