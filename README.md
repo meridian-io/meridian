@@ -54,6 +54,8 @@ Optional parts are off by default:
 | `mcp.enableTools` | `[]` | Held tools to turn on, or `["all"]`. The chart grants only the Kubernetes permissions those tools need |
 | `mcp.allowWrites` | `false` | Let `execute_query` change data |
 | `operator.credentials.provider` | `kubernetes` | `vault` or `aws-secrets-manager` for credential rotation |
+| `metrics.serviceMonitor.enabled` | off | ServiceMonitors for the Prometheus Operator. See [Monitoring](#monitoring) |
+| `metrics.dashboard.enabled` | off | ConfigMap with the Grafana dashboard, for the Grafana sidecar |
 
 To run the MCP server in the cluster:
 
@@ -73,6 +75,36 @@ All pods run as non-root with a read-only root filesystem and no Linux capabilit
 helm pull oci://ghcr.io/meridian-io/charts/meridian --version <version> --untar
 kubectl apply --server-side -f meridian/crds/
 ```
+
+### Monitoring
+
+The operator and the MCP server export Prometheus metrics. The operator serves them on `:8081` and the MCP server on `:9090`, each behind its own ClusterIP Service (`<release>-meridian-operator-metrics`, `<release>-meridian-mcp-metrics`). The endpoints have no token, like most exporters, so keep them inside the cluster. `metrics.enabled=false` turns off the MCP endpoint and removes the Services.
+
+With the Prometheus Operator and a Grafana that loads dashboards from ConfigMaps:
+
+```bash
+helm upgrade meridian oci://ghcr.io/meridian-io/charts/meridian -n meridian --reuse-values \
+  --set metrics.serviceMonitor.enabled=true --set metrics.serviceMonitor.labels.release=<your-prometheus-release> \
+  --set metrics.dashboard.enabled=true
+```
+
+Without the sidecar, import [`charts/meridian/dashboards/meridian.json`](charts/meridian/dashboards/meridian.json) in Grafana.
+
+| Metric | What it tells you |
+|---|---|
+| `meridian_clusters{namespace,pool,phase}` | Clusters per pool and phase. Alert when `phase="Idle"` stays at 0 |
+| `meridian_pool_desired_replicas{namespace,pool}` | The pool's `spec.replicas` |
+| `meridian_cluster_provision_seconds{namespace,pool,profile}` | Time from creation until a cluster is ready for queries |
+| `meridian_cluster_phase_transitions_total{from,to}` | Phase changes, e.g. `Idle→Degraded` when a coordinator crashes |
+| `meridian_pool_clusters_replaced_total{namespace,pool,reason}` | Clusters a pool deleted: `failed`, `degraded`, `image`, `age`, `scale_down` |
+| `meridian_reservations_expired_total{namespace,pool}` | Reservations released after `reservationTtl`, usually from crashed clients |
+| `meridian_reservation_duration_seconds{source,result}` | REST reservation latency. `result="no_capacity"` means no idle cluster appeared in 30 s |
+| `meridian_credential_rotations_total{backend,result}` | Credential rotations by backend and result |
+| `meridian_mcp_tool_calls_total{tool,result}` | MCP tool calls, `ok` or `error` |
+| `meridian_mcp_tool_duration_seconds{tool}` | MCP tool latency |
+| `meridian_mcp_query_cache_total{result}` | Query cache `hit`, `miss` or `shared` (an identical query was already running) |
+
+The `meridian_clusters` and `meridian_pool_desired_replicas` gauges are reported by every operator replica, so aggregate them with `max by`, as the dashboard does. Labels never contain cluster names, client IDs or SQL.
 
 ---
 
@@ -146,7 +178,7 @@ Each default can be relaxed with a flag:
 
 The read-only check is a guardrail for AI clients. Trino access control remains the real security boundary. For example, connector table functions such as `system.query(...)` send SQL to the underlying database and are not inspected by Meridian.
 
-Other flags: `--disable-localhost-protection` (only for a reverse proxy on the same host that forwards over localhost), `--cache-max-entries` (default 1000), and `--log-format json|text`. Tool failures (bad arguments, missing clusters) come back as tool results with `isError: true`, so the AI client can see and correct them. In HTTP mode, `/healthz` reports the process is alive and `/readyz` reports the Kubernetes API is reachable. Neither requires a token.
+Other flags: `--metrics-addr` (Prometheus metrics, default `:9090` in http mode, off in stdio mode unless set; see [Monitoring](#monitoring)), `--disable-localhost-protection` (only for a reverse proxy on the same host that forwards over localhost), `--cache-max-entries` (default 1000), and `--log-format json|text`. Tool failures (bad arguments, missing clusters) come back as tool results with `isError: true`, so the AI client can see and correct them. In HTTP mode, `/healthz` reports the process is alive and `/readyz` reports the Kubernetes API is reachable. Neither requires a token.
 
 ### Tools
 
@@ -529,7 +561,7 @@ The same pattern works as tasks in Airflow, Dagster, or Prefect.
 | Profile System | ✅ Released | Trino config and pod CPU/memory per profile, built-in and custom |
 | Production Hardening (v1.3) | ✅ Released | Secure-by-default MCP server, operator hardening, Helm chart, CI checks |
 | Current MCP Spec (v1.4) | ✅ Released | MCP 2026-07-28: Streamable HTTP at `/mcp`, stateless multi-replica, works with older clients. Legacy `/sse` removed in v1.5 |
-| Metrics & E2E Tests (v1.5) | 📋 Planned | Prometheus metrics, Grafana dashboards, kind-based end-to-end tests against real Trino |
+| Metrics & E2E Tests (v1.5) | 🚧 In progress | End-to-end tests on kind with real Trino (done), Prometheus metrics and a Grafana dashboard (done), sample `tpch` catalog |
 | Web UI | 📋 Planned | Pool visualization, catalog management, audit trail |
 
 ---

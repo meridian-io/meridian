@@ -54,6 +54,7 @@ spec:
           args:
             - --transport=http
             - --addr=:8080
+            - --metrics-addr={{ if .Values.metrics.enabled }}:9090{{ end }}
             {{- with $mcp.allowedOrigins }}
             - --allowed-origins={{ join "," . }}
             {{- end }}
@@ -79,6 +80,10 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: 9090
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

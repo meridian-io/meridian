@@ -21,6 +21,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   - `mcp.baseURL` is gone and ignored, with a note in the install output.
   - `mcp.replicas` can be any number.
 
+### Added
+- **Prometheus metrics and a Grafana dashboard.**
+  - **Operator** (`:8081`): clusters per pool and phase, desired replicas, provisioning time, phase transitions, clusters replaced by reason, expired reservations, REST reservation latency by result, and credential rotations by backend and result.
+  - **MCP server** (`:9090`, new `--metrics-addr`): tool calls by tool and result, tool latency, and query cache hits. It is on in http mode and off in stdio mode unless set.
+  - **Chart:** ClusterIP metrics Services (`metrics.enabled`, on by default), an optional ServiceMonitor (`metrics.serviceMonitor.enabled`), and an optional dashboard ConfigMap for the Grafana sidecar (`metrics.dashboard.enabled`). The dashboard JSON is at `charts/meridian/dashboards/meridian.json`.
+  - The end-to-end suite checks the exported values.
+
 ### Removed
 - Legacy HTTP+SSE transport (`/sse`, `/message`), its `--base-url` option, and the chart's one-replica limit that went with it.
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/meridian-io/meridian/mcp/internal/k8s"
+	"github.com/meridian-io/meridian/mcp/internal/metrics"
 	mcpserver "github.com/meridian-io/meridian/mcp/internal/server"
 	"github.com/meridian-io/meridian/mcp/internal/tools"
 )
@@ -51,10 +53,12 @@ func run() error {
 		allowedOrigins  string
 		noLocalhostProt bool
 		shutdownDelay   time.Duration
+		metricsAddr     string
 	)
 
 	flag.StringVar(&transport, "transport", "stdio", "Transport: stdio, or http for remote clients (Streamable HTTP at /mcp)")
 	flag.StringVar(&addr, "addr", ":8080", "Address to listen on when transport=http")
+	flag.StringVar(&metricsAddr, "metrics-addr", ":9090", "Address for Prometheus metrics (/metrics, no token). Used in http mode; in stdio mode only when set explicitly. Empty disables")
 	// Removed in v1.5 with the HTTP+SSE transport. Still accepted so that
 	// deployments which set --legacy-sse=false or --base-url keep starting.
 	flag.BoolVar(&legacySSE, "legacy-sse", false, "Removed in v1.5 (the HTTP+SSE transport is gone). Only false is accepted")
@@ -86,11 +90,19 @@ func run() error {
 		return errors.New("--legacy-sse was removed in v1.5: the HTTP+SSE transport (/sse) is gone. Remove the flag and point clients at /mcp")
 	}
 	setupLogging(logFormat, transport)
+	metricsAddrSet := false
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "legacy-sse" || f.Name == "base-url" {
+		switch f.Name {
+		case "legacy-sse", "base-url":
 			slog.Warn("flag has no effect since v1.5 and will be rejected in a future release; remove it", "flag", "--"+f.Name)
+		case "metrics-addr":
+			metricsAddrSet = true
 		}
 	})
+	// A local stdio server (e.g. Claude Desktop) should not open a port unasked.
+	if transport == "stdio" && !metricsAddrSet {
+		metricsAddr = ""
+	}
 
 	extra, err := mcpserver.ParseEnableTools(enableTools)
 	if err != nil {
@@ -130,6 +142,14 @@ func run() error {
 		<-ctx.Done()
 		stop()
 	}()
+
+	if metricsAddr != "" {
+		stopMetrics, err := serveMetrics(metricsAddr)
+		if err != nil {
+			return err
+		}
+		defer stopMetrics()
+	}
 
 	slog.Info("meridian starting",
 		"version", version,
@@ -234,6 +254,30 @@ func serveHTTP(ctx context.Context, s *server.MCPServer, o httpOptions) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+// serveMetrics serves /metrics on its own port, without the MCP token, so
+// Prometheus can scrape it. It binds before returning so a bad address fails
+// at startup.
+func serveMetrics(addr string) (stop func(), err error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("metrics listener on %s: %w", addr, err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler())
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("metrics server stopped", "error", err)
+		}
+	}()
+	slog.Info("serving metrics", "addr", ln.Addr().String(), "path", "/metrics")
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}, nil
 }
 
 func splitList(s string) []string {

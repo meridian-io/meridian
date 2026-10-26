@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
+	"github.com/meridian-io/meridian/operator/internal/metrics"
 	"github.com/meridian-io/meridian/operator/internal/trino"
 )
 
@@ -98,18 +100,27 @@ type reservationResponse struct {
 }
 
 func (h *ReservationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	outcome := metrics.ReserveError
+	defer func() {
+		metrics.ReservationDuration.WithLabelValues("rest", outcome).Observe(time.Since(start).Seconds())
+	}()
+
 	clientID := extractClientID(r.TLS)
 	if clientID == "" {
+		outcome = metrics.ReserveUnauthorize
 		http.Error(w, "missing client certificate", http.StatusUnauthorized)
 		return
 	}
 
 	var req reservationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		outcome = metrics.ReserveBadRequest
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 	if req.ReservationID == "" || req.Profile == "" {
+		outcome = metrics.ReserveBadRequest
 		http.Error(w, "reservationId and profile are required", http.StatusBadRequest)
 		return
 	}
@@ -122,10 +133,14 @@ func (h *ReservationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Namespace:     h.Namespace,
 	})
 	if err != nil {
+		if errors.Is(err, trino.ErrNoIdleClusters) {
+			outcome = metrics.ReserveNoCapacity
+		}
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 
+	outcome = metrics.ReserveOK
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(reservationResponse{

@@ -15,6 +15,9 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/meridian-io/meridian/mcp/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 const (
@@ -535,5 +538,34 @@ func TestBodyLimitChunked(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Errorf("oversized chunked body = %d, want 413", resp.StatusCode)
+	}
+}
+
+// TestToolCallMetrics: every registered tool has ok and error series from
+// startup, and calls are counted by result.
+func TestToolCallMetrics(t *testing.T) {
+	srv := newTestHTTP(t, HTTPOptions{Token: testToken})
+	ok := metrics.ToolCalls.WithLabelValues("list_clusters", metrics.ResultOK)
+	fail := metrics.ToolCalls.WithLabelValues("get_cluster", metrics.ResultError)
+	okBefore, failBefore := testutil.ToFloat64(ok), testutil.ToFloat64(fail)
+
+	h, body := callTool("list_clusters", map[string]any{})
+	if r := post(t, srv.URL, h, body); r.status != http.StatusOK {
+		t.Fatalf("list_clusters: %d %+v", r.status, r.Error)
+	}
+	h, body = callTool("get_cluster", map[string]any{"name": "does-not-exist"})
+	if r := post(t, srv.URL, h, body); r.status != http.StatusOK {
+		t.Fatalf("get_cluster: %d %+v", r.status, r.Error)
+	}
+	if got := testutil.ToFloat64(ok) - okBefore; got != 1 {
+		t.Errorf("list_clusters ok grew by %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(fail) - failBefore; got != 1 {
+		t.Errorf("get_cluster error grew by %v, want 1", got)
+	}
+
+	// Every core tool has an ok and an error series before any call.
+	if n := testutil.CollectAndCount(metrics.ToolCalls); n < 2*len(CoreTools) {
+		t.Errorf("%d tool call series, want at least %d", n, 2*len(CoreTools))
 	}
 }

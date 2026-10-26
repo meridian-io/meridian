@@ -47,6 +47,7 @@ func TestE2E(t *testing.T) {
 	t.Run("coordinator crash recovery", s.coordinatorCrash)
 	t.Run("credential rotation", s.credentialRotation)
 	t.Run("mcp rolling restart drops no calls", s.mcpRollingRestart)
+	t.Run("metrics are exported", s.metricsExported)
 }
 
 type suite struct {

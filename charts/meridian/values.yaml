@@ -134,3 +134,27 @@ mcp:
   tolerations: []
   affinity: {}
   priorityClassName: ""
+
+metrics:
+  # Prometheus metrics: the operator on :8081 and the MCP server on :9090,
+  # each behind its own ClusterIP Service (<release>-meridian-*-metrics).
+  # Plain HTTP without a token, like most exporters: keep them inside the
+  # cluster. Turning this off stops the MCP endpoint and removes the Services.
+  enabled: true
+
+  serviceMonitor:
+    # Create ServiceMonitors for the Prometheus Operator (needs its CRDs).
+    enabled: false
+    interval: 30s
+    # Extra labels, e.g. the release label your Prometheus selects on.
+    labels: {}
+
+  dashboard:
+    # A ConfigMap holding the Meridian Grafana dashboard, for the Grafana
+    # sidecar that loads dashboards from labelled ConfigMaps. The JSON is
+    # also in the chart at dashboards/meridian.json for manual import.
+    enabled: false
+    labels:
+      grafana_dashboard: "1"
+    # Namespace for the ConfigMap; defaults to the release namespace.
+    namespace: ""

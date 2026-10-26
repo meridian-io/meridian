@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/meridian-io/meridian/mcp/internal/metrics"
 )
 
 // DefaultCacheMaxEntries caps the query cache unless SetCacheMaxEntries is called.
@@ -184,6 +186,7 @@ func executeTrinoQueryCached(ctx context.Context, coordinatorURL, sql string, ma
 
 	// Fast path: already cached.
 	if cached, ok := globalCache.get(key); ok {
+		metrics.QueryCache.WithLabelValues(metrics.CacheHit).Inc()
 		return markCached(cached), nil
 	}
 
@@ -203,6 +206,7 @@ func executeTrinoQueryCached(ctx context.Context, coordinatorURL, sql string, ma
 			return nil, call.err
 		}
 		if cached, ok := globalCache.get(key); ok {
+			metrics.QueryCache.WithLabelValues(metrics.CacheShared).Inc()
 			return markCached(cached), nil
 		}
 		// Invalidated between the wait and the read.
@@ -214,6 +218,7 @@ func executeTrinoQueryCached(ctx context.Context, coordinatorURL, sql string, ma
 	globalCache.inflight[key] = call
 	gen := globalCache.generations[prefix]
 	globalCache.mu.Unlock()
+	metrics.QueryCache.WithLabelValues(metrics.CacheMiss).Inc()
 
 	result, err := executeTrinoQuery(ctx, coordinatorURL, sql, maxRows)
 	if err == nil {
