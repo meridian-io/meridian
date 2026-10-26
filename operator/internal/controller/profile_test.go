@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -134,6 +135,64 @@ func TestDeploymentsCarryResources(t *testing.T) {
 		initRes := spec.InitContainers[0].Resources
 		if initRes.Limits.Memory().IsZero() || initRes.Requests.Cpu().IsZero() {
 			t.Errorf("%s init container needs explicit resources for ResourceQuota namespaces", name)
+		}
+	}
+}
+
+// TestSampleCatalogs: the built-in default profile (and custom profiles built
+// on it) include tpch; medium and large do not; a profile can opt out with
+// sampleCatalogs: "" or choose tpch/tpcds. Unknown names are ignored.
+func TestSampleCatalogs(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(
+		profileCM("small", map[string]string{"memory": "2Gi"}),
+		profileCM("none", map[string]string{"sampleCatalogs": ""}),
+		profileCM("both", map[string]string{"sampleCatalogs": " tpch, tpcds ,mysql"}),
+		profileCM("large", map[string]string{"sampleCatalogs": "tpcds"}),
+	).Build()
+	for name, want := range map[string]string{
+		"default": "tpch",
+		"unknown": "tpch", // falls back to default
+		"small":   "tpch", // custom profile starts from default
+		"medium":  "",
+		"none":    "",
+		"both":    "tpch,tpcds",
+		"large":   "tpcds", // a ConfigMap can turn them on for a built-in tier
+	} {
+		p := lookupProfile(context.Background(), c, "meridian", name)
+		if got := strings.Join(p.SampleCatalogs, ","); got != want {
+			t.Errorf("%s: sample catalogs %q, want %q", name, got, want)
+		}
+	}
+}
+
+// TestSampleCatalogInClusterConfig: the tpch catalog is in the cluster
+// ConfigMap and both init containers copy catalogs into Trino's catalog
+// directory, so it survives pod restarts.
+func TestSampleCatalogInClusterConfig(t *testing.T) {
+	s := newTestScheme()
+	cluster := newCluster("test-cluster", "meridian", meridianv1alpha1.ClusterPhaseEmpty)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cluster).WithStatusSubresource(cluster).Build()
+	r := &ClusterController{Client: c, Scheme: s}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-cluster", Namespace: "meridian"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cm := &corev1.ConfigMap{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "test-cluster-config", Namespace: "meridian"}, cm); err != nil {
+		t.Fatal(err)
+	}
+	if got := cm.Data["catalog-tpch.properties"]; got != "connector.name=tpch\n" {
+		t.Errorf("catalog-tpch.properties = %q", got)
+	}
+	for _, role := range []string{"coordinator", "worker"} {
+		dep := &appsv1.Deployment{}
+		if err := c.Get(context.Background(), types.NamespacedName{Name: "test-cluster-" + role, Namespace: "meridian"}, dep); err != nil {
+			t.Fatal(err)
+		}
+		cmd := strings.Join(dep.Spec.Template.Spec.InitContainers[0].Command, " ")
+		if !strings.Contains(cmd, "/etc/trino/catalog/") {
+			t.Errorf("%s init container does not copy catalogs: %s", role, cmd)
 		}
 	}
 }

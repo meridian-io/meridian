@@ -44,6 +44,7 @@ func TestE2E(t *testing.T) {
 	t.Run("reserve and release over rest", s.restReserveRelease)
 	t.Run("reserve and release over mcp", s.mcpReserveRelease)
 	t.Run("scale pool", s.scalePool)
+	t.Run("sample catalog on every cluster", s.sampleCatalog)
 	t.Run("coordinator crash recovery", s.coordinatorCrash)
 	t.Run("credential rotation", s.credentialRotation)
 	t.Run("mcp rolling restart drops no calls", s.mcpRollingRestart)
@@ -395,6 +396,22 @@ func (s *suite) scalePool(t *testing.T) {
 	s.ready(t)
 }
 
+// tpchQuery reads the sample catalog; tpch.tiny.nation has 25 rows.
+const tpchQuery = "SELECT 'e2e-nation-' || CAST(count(*) AS varchar) FROM tpch.tiny.nation"
+
+// Scenario 10: a new cluster can answer a demo query right away. The e2e
+// profile has no sampleCatalogs key, so it inherits tpch from "default".
+func (s *suite) sampleCatalog(t *testing.T) {
+	for _, c := range s.ready(t) {
+		if cats := s.mcp.call(t, "list_catalogs", map[string]any{"cluster_name": c.name}); !strings.Contains(cats, "tpch") {
+			t.Errorf("%s: list_catalogs does not list tpch:\n%s", c.name, cats)
+		}
+		if out, err := s.mcp.query(c.name, tpchQuery); err != nil || !strings.Contains(out, "e2e-nation-25") {
+			t.Errorf("%s: %v\n%s", c.name, err, out)
+		}
+	}
+}
+
 // Scenario 6: kill a coordinator. The pool must get back to full strength
 // with every Idle cluster answering queries.
 func (s *suite) coordinatorCrash(t *testing.T) {
@@ -421,6 +438,10 @@ func (s *suite) coordinatorCrash(t *testing.T) {
 		for _, c := range idle {
 			if out, err := s.mcp.query(c.name, nodesQuery); err != nil || !strings.Contains(out, "e2e-nodes-2") {
 				return false, fmt.Sprintf("%s: query failed: %v", c.name, err)
+			}
+			// The sample catalog is a static file, so it survives the coordinator being replaced.
+			if out, err := s.mcp.query(c.name, tpchQuery); err != nil || !strings.Contains(out, "e2e-nation-25") {
+				return false, fmt.Sprintf("%s: tpch query failed: %v", c.name, err)
 			}
 		}
 		return true, phases(cs)

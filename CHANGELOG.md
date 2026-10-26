@@ -28,10 +28,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   - **Chart:** ClusterIP metrics Services (`metrics.enabled`, on by default), an optional ServiceMonitor (`metrics.serviceMonitor.enabled`), and an optional dashboard ConfigMap for the Grafana sidecar (`metrics.dashboard.enabled`). The dashboard JSON is at `charts/meridian/dashboards/meridian.json`.
   - The end-to-end suite checks the exported values.
 
+- **Sample data on new clusters.**
+  - Clusters with the `default` profile now include the read-only `tpch` catalog, so `SELECT * FROM tpch.tiny.nation` works on a new cluster.
+  - A profile ConfigMap can choose `sampleCatalogs: "tpch,tpcds"` or turn them off with `sampleCatalogs: ""`. `medium` and `large` include none.
+  - The catalogs are written into each pod's configuration at startup, so they survive pod restarts. This applies to newly created clusters.
+
+### Known issues
+- Catalogs added while a cluster runs (`add_catalog`, credential rotation) are stored on the coordinator pod's local disk and are lost if that pod is replaced, for example after a crash or eviction. Add them again or rotate again. A fix is planned for v1.6.
+
 ### Removed
 - Legacy HTTP+SSE transport (`/sse`, `/message`), its `--base-url` option, and the chart's one-replica limit that went with it.
 
 ### Fixed
+- **A failing credential rotation was retried about once a second** instead of backing off from 5 s up to 20 min. Each failure's status update triggered an immediate retry. Rotation now waits out the backoff, so a broken secret no longer hammers Trino with DROP/CREATE CATALOG.
 - The MCP Docker image's default command used `--transport sse`. It now uses `--transport http`.
 
 ---

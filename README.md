@@ -43,6 +43,13 @@ EOF
 kubectl -n meridian get clusters -w
 ```
 
+Clusters with the `default` profile include the read-only `tpch` sample catalog, so a first query works right away:
+
+```bash
+CLUSTER=$(kubectl -n meridian get clusters -o jsonpath='{.items[0].metadata.name}')
+kubectl -n meridian exec deploy/$CLUSTER-coordinator -- trino --execute "SELECT name FROM tpch.tiny.nation LIMIT 5"
+```
+
 Optional parts are off by default:
 
 | Value | Default | What it does |
@@ -328,9 +335,12 @@ data:
   cpu: "6"
   coordinatorMemory: "16Gi" # role-specific overrides
   workerCPU: "8"
+  sampleCatalogs: ""        # tpch, tpcds, or "" for none
 ```
 
-Sizes apply to newly created clusters. Existing clusters pick them up when the pool replaces them (image upgrade or `maxClusterAge`).
+**Sample catalogs.** `tpch` and `tpcds` are read-only generated datasets bundled with Trino. They need no credentials or external systems. The `default` profile includes `tpch`, and a custom profile inherits it unless it sets `sampleCatalogs`. `medium` and `large` include none. They're written into each pod's configuration at startup, so they survive pod restarts.
+
+Sizes and sample catalogs apply to newly created clusters. Existing clusters pick them up when the pool replaces them (image upgrade or `maxClusterAge`).
 
 ### Operator Flags
 
@@ -561,7 +571,7 @@ The same pattern works as tasks in Airflow, Dagster, or Prefect.
 | Profile System | ✅ Released | Trino config and pod CPU/memory per profile, built-in and custom |
 | Production Hardening (v1.3) | ✅ Released | Secure-by-default MCP server, operator hardening, Helm chart, CI checks |
 | Current MCP Spec (v1.4) | ✅ Released | MCP 2026-07-28: Streamable HTTP at `/mcp`, stateless multi-replica, works with older clients. Legacy `/sse` removed in v1.5 |
-| Metrics & E2E Tests (v1.5) | 🚧 In progress | End-to-end tests on kind with real Trino (done), Prometheus metrics and a Grafana dashboard (done), sample `tpch` catalog |
+| Metrics & E2E Tests (v1.5) | 🚧 In progress | End-to-end tests on kind with real Trino, Prometheus metrics and a Grafana dashboard, `tpch` sample catalog on new clusters |
 | Web UI | 📋 Planned | Pool visualization, catalog management, audit trail |
 
 ---

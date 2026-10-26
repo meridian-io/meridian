@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -520,5 +521,59 @@ func TestClusterController_RotationUnknownProvider(t *testing.T) {
 	// Cluster Phase must be unchanged — rotation failure ≠ cluster failure.
 	if updated.Status.Phase != meridianv1alpha1.ClusterPhaseIdle {
 		t.Errorf("expected phase Idle (unchanged), got %q", updated.Status.Phase)
+	}
+}
+
+// TestClusterController_RotationWaitsOutBackoff: a failed rotation's status
+// update re-triggers the reconcile at once. That reconcile must wait out the
+// backoff instead of hitting Trino again.
+func TestClusterController_RotationWaitsOutBackoff(t *testing.T) {
+	var calls atomic.Int32
+	trino := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(trino.Close)
+
+	cluster := newCluster("test-cluster", "meridian", meridianv1alpha1.ClusterPhaseIdle)
+	cluster.Annotations = map[string]string{credentials.AnnotationRotateCredentials: "kubernetes/mysql_prod/mysql-secret"}
+	cluster.Status.CoordinatorURL = trino.URL
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "mysql-secret", Namespace: "meridian"},
+		Data:       map[string][]byte{"connector.name": []byte("tpch")},
+	}
+	s := newTestScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cluster, secret).WithStatusSubresource(cluster).Build()
+	provider := credentials.NewKubernetesProvider(c, "meridian")
+	r := &ClusterController{
+		Client: c, Scheme: s,
+		Providers: map[string]credentials.SecretProvider{"kubernetes": provider},
+		Rotator:   credentials.NewRotator(),
+		Cache:     map[string]*credentials.SecretCache{"kubernetes": credentials.NewSecretCache(provider, credentials.DefaultTTL)},
+	}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-cluster", Namespace: "meridian"}}
+
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	first := calls.Load()
+	if first == 0 {
+		t.Fatal("the first attempt did not reach Trino")
+	}
+
+	res, err := r.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != first {
+		t.Errorf("an immediate retry reached Trino (%d calls, want %d)", calls.Load(), first)
+	}
+	if res.RequeueAfter <= 0 || res.RequeueAfter > credentials.BackoffDuration(1) {
+		t.Errorf("RequeueAfter = %v, want the rest of the %v backoff", res.RequeueAfter, credentials.BackoffDuration(1))
+	}
+	updated := &meridianv1alpha1.Cluster{}
+	_ = c.Get(context.Background(), req.NamespacedName, updated)
+	if updated.Status.RotationFailures != 1 {
+		t.Errorf("RotationFailures = %d, want 1 (the wait is not a failure)", updated.Status.RotationFailures)
 	}
 }

@@ -27,15 +27,28 @@ type profileConfig struct {
 	QueryMaxMemoryPerNode string
 	Coordinator           podResources
 	Worker                podResources
+	// SampleCatalogs are read-only demo catalogs (tpch, tpcds) that ship
+	// with Trino, written into each pod's catalog directory at startup.
+	SampleCatalogs []string
 }
+
+// sampleConnectors are the generated-data connectors bundled with Trino.
+// They need no credentials or external systems and are read-only.
+var sampleConnectors = map[string]bool{"tpch": true, "tpcds": true}
 
 // Built-in tiers. Memory is ~125% of the JVM heap, leaving room for
 // off-heap memory (code cache, thread stacks, direct buffers) so the pod is
 // not OOM-killed at full heap.
 var builtinProfiles = map[string]profileConfig{
-	"default": newProfile("4G", "4GB", "1GB", "5Gi", "1"),
+	// default includes the tpch sample catalog so a first query works.
+	"default": withSampleCatalogs(newProfile("4G", "4GB", "1GB", "5Gi", "1"), "tpch"),
 	"medium":  newProfile("8G", "8GB", "2GB", "10Gi", "2"),
 	"large":   newProfile("16G", "16GB", "4GB", "20Gi", "4"),
+}
+
+func withSampleCatalogs(p profileConfig, names ...string) profileConfig {
+	p.SampleCatalogs = names
+	return p
 }
 
 func newProfile(heap, maxMem, maxMemPerNode, memory, cpu string) profileConfig {
@@ -58,6 +71,7 @@ func newProfile(heap, maxMem, maxMemPerNode, memory, cpu string) profileConfig {
 //	memory, cpu                                      pod resources for both roles
 //	coordinatorMemory, coordinatorCPU                coordinator-only override
 //	workerMemory, workerCPU                          worker-only override
+//	sampleCatalogs                                   comma-separated: tpch, tpcds; "" for none
 //
 // If jvmHeap is set but memory is not, memory is derived as 125% of the heap.
 // Invalid quantities are logged and ignored.
@@ -114,6 +128,21 @@ func lookupProfile(ctx context.Context, c client.Client, namespace, name string)
 			*t = q
 		}
 	}
+	// Present but empty ("") turns sample catalogs off.
+	if v, ok := cm.Data["sampleCatalogs"]; ok {
+		p.SampleCatalogs = nil
+		for _, catalog := range strings.Split(v, ",") {
+			catalog = strings.TrimSpace(catalog)
+			switch {
+			case catalog == "":
+			case sampleConnectors[catalog]:
+				p.SampleCatalogs = append(p.SampleCatalogs, catalog)
+			default:
+				logger.Info("ignoring unknown sample catalog in profile; use tpch or tpcds", "profile", name, "catalog", catalog)
+			}
+		}
+	}
+
 	set("memory", &p.Coordinator.Memory, &p.Worker.Memory)
 	set("cpu", &p.Coordinator.CPU, &p.Worker.CPU)
 	set("coordinatorMemory", &p.Coordinator.Memory)
