@@ -7,41 +7,44 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
-## [Unreleased]
+## [v1.5.0] — 2026-10-26
 
-### Upgrade notes (breaking)
-- **The deprecated HTTP+SSE transport is removed**, as announced in v1.4.
+Prometheus metrics and a Grafana dashboard, sample data on new clusters, and end-to-end tests on every change. The deprecated `/sse` endpoint is removed.
+
+### Upgrade notes
+- **The deprecated HTTP+SSE transport is removed**, as announced in v1.4. This is a breaking change.
   - The `/sse` and `/message` endpoints are gone. Clients connect to `/mcp` (Streamable HTTP), which every current client supports, including Claude Code, Claude Desktop, Cursor, and MCP 2025-era clients.
   - Only clients that speak just the 2024-11-05 transport stop working.
-- **`--transport sse` now fails at startup** with a message to use `--transport http`. If you run the image with your own arguments, change `sse` to `http`. The image's default command already uses `http`.
-- **`--legacy-sse=true` fails at startup.**
-  - `--legacy-sse=false` and `--base-url` still start, with a warning, and will be rejected in a later release. Remove them.
+- **`--transport sse` now fails at startup** with a message to use `--transport http`. If you run the image with your own arguments, change `sse` to `http`. The image's default command now uses `http`.
+- **`--legacy-sse=true` fails at startup.** `--legacy-sse=false` and `--base-url` still start, with a warning, and will be rejected in a later release. Remove them.
 - **Helm:**
   - `mcp.legacySSE: true` fails with a message to remove it; `false` is accepted.
   - `mcp.baseURL` is gone and ignored, with a note in the install output.
   - `mcp.replicas` can be any number.
+- **Metrics are on by default.**
+  - The chart adds two ClusterIP Services (`<release>-meridian-operator-metrics`, `<release>-meridian-mcp-metrics`).
+  - The MCP pod listens on port 9090 for Prometheus.
+  - Set `metrics.enabled=false` to turn this off.
 
 ### Added
 - **Prometheus metrics and a Grafana dashboard.**
   - **Operator** (`:8081`): clusters per pool and phase, desired replicas, provisioning time, phase transitions, clusters replaced by reason, expired reservations, REST reservation latency by result, and credential rotations by backend and result.
   - **MCP server** (`:9090`, new `--metrics-addr`): tool calls by tool and result, tool latency, and query cache hits. It is on in http mode and off in stdio mode unless set.
-  - **Chart:** ClusterIP metrics Services (`metrics.enabled`, on by default), an optional ServiceMonitor (`metrics.serviceMonitor.enabled`), and an optional dashboard ConfigMap for the Grafana sidecar (`metrics.dashboard.enabled`). The dashboard JSON is at `charts/meridian/dashboards/meridian.json`.
-  - The end-to-end suite checks the exported values.
-
+  - **Chart:** an optional ServiceMonitor (`metrics.serviceMonitor.enabled`) and an optional dashboard ConfigMap for the Grafana sidecar (`metrics.dashboard.enabled`). The dashboard JSON is at `charts/meridian/dashboards/meridian.json`.
 - **Sample data on new clusters.**
-  - Clusters with the `default` profile now include the read-only `tpch` catalog, so `SELECT * FROM tpch.tiny.nation` works on a new cluster.
+  - Clusters with the `default` profile include the read-only `tpch` catalog, so `SELECT * FROM tpch.tiny.nation` works on a new cluster.
   - A profile ConfigMap can choose `sampleCatalogs: "tpch,tpcds"` or turn them off with `sampleCatalogs: ""`. `medium` and `large` include none.
   - The catalogs are written into each pod's configuration at startup, so they survive pod restarts. This applies to newly created clusters.
-
-### Known issues
-- Catalogs added while a cluster runs (`add_catalog`, credential rotation) are stored on the coordinator pod's local disk and are lost if that pod is replaced, for example after a crash or eviction. Add them again or rotate again. A fix is planned for v1.6.
+- **A tutorial** at [getmeridian.dev/tutorial.html](https://getmeridian.dev/tutorial.html): install, pools, first query, reservations, AI agents, scaling, credential rotation and monitoring, step by step.
 
 ### Removed
-- Legacy HTTP+SSE transport (`/sse`, `/message`), its `--base-url` option, and the chart's one-replica limit that went with it.
+- The legacy HTTP+SSE transport (`/sse`, `/message`), its `--base-url` option, and the chart's one-replica limit that went with it.
 
 ### Fixed
 - **A failing credential rotation was retried about once a second** instead of backing off from 5 s up to 20 min. Each failure's status update triggered an immediate retry. Rotation now waits out the backoff, so a broken secret no longer hammers Trino with DROP/CREATE CATALOG.
-- The MCP Docker image's default command used `--transport sse`. It now uses `--transport http`.
+
+### Known issues
+- Catalogs added while a cluster runs (`add_catalog`, credential rotation) are stored on the coordinator pod's local disk and are lost if that pod is replaced, for example after a crash or eviction. Add them again or rotate again. A fix is planned for v1.6.
 
 ---
 

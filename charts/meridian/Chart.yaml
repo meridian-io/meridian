@@ -2,8 +2,8 @@ apiVersion: v2
 name: meridian
 description: Trino operator with hot-standby cluster pools, plus an optional MCP server for AI clients.
 type: application
-version: 1.4.1
-appVersion: "v1.4.1"
+version: 1.5.0
+appVersion: "v1.5.0"
 home: https://github.com/meridian-io/meridian
 sources:
   - https://github.com/meridian-io/meridian
