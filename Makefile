@@ -11,7 +11,7 @@ CONTROLLER_GEN ?= $(GOPATH)/bin/controller-gen
 
 .PHONY: all build build-mcp test test-mcp test-all lint lint-mcp \
         generate manifests verify-manifests install run docker-build docker-build-mcp \
-        helm-lint helm-install helm-uninstall mcp-tidy release-dry-run fmt controller-gen
+        helm-lint helm-install helm-uninstall mcp-tidy release-dry-run fmt controller-gen e2e
 
 all: build build-mcp
 
@@ -99,6 +99,13 @@ docker-build:
 docker-push:
 	docker push $(IMG)
 
+## ── End-to-end ──────────────────────────────────────────────────────────────
+
+## Run the end-to-end suite on a new kind cluster (meridian-e2e) with real Trino.
+## Needs kind, kubectl, helm and docker. E2E_POOL_SIZE=1 for machines with < 12 GB for Docker.
+e2e:
+	hack/e2e/run.sh
+
 ## ── Helm ────────────────────────────────────────────────────────────────────
 
 ## Lint the chart and validate rendered manifests against the Kubernetes schemas
@@ -118,7 +125,7 @@ helm-uninstall:
 
 ## Fail if any Go file is not gofmt-formatted
 fmt:
-	@out=$$(gofmt -l mcp operator); test -z "$$out" || (echo "gofmt needed:"; echo "$$out"; exit 1)
+	@out=$$(gofmt -l mcp operator e2e); test -z "$$out" || (echo "gofmt needed:"; echo "$$out"; exit 1)
 
 ## ── Release ─────────────────────────────────────────────────────────────────
 

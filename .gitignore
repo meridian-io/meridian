@@ -28,3 +28,4 @@ docs/
 # Binaries in source tree
 mcp/meridian-mcp
 operator/meridian-operator
+e2e-artifacts/

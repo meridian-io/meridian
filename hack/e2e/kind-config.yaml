@@ -1,0 +1,14 @@
+# kind cluster for the end-to-end suite (make e2e).
+# The MCP server and the REST API are exposed as NodePort Services and mapped
+# to the host, so the tests reach them through real Service load balancing.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080 # MCP server
+        hostPort: 30080
+        listenAddress: 127.0.0.1
+      - containerPort: 30443 # REST API (mTLS)
+        hostPort: 30443
+        listenAddress: 127.0.0.1

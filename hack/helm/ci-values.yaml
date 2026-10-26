@@ -18,3 +18,6 @@ mcp:
   allowedOrigins: ["https://app.example.com"]
   extraNamespaces: ["meridian-staging"]
   baseURL: https://meridian.example.com
+  service:
+    type: NodePort
+    nodePort: 30080

@@ -1,0 +1,88 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26.x"
+  HELM_VERSION: v3.16.4
+  KIND_VERSION: v0.31.0
+
+jobs:
+  e2e:
+    # This job is a required check. It always runs and passes quickly for
+    # docs-only changes; a workflow-level paths filter would leave the check
+    # pending forever instead.
+    name: End-to-end (kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Skip for docs-only changes
+        id: changes
+        run: |
+          # On pull_request the checkout is a merge commit; HEAD^1 is the base.
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          echo "$changed"
+          if echo "$changed" | grep -qvE '(\.md$|^docs/|^LICENSE$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Only documentation changed; skipping the suite."
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.changes.outputs.code == 'true'
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache-dependency-path: |
+            e2e/go.sum
+            operator/go.sum
+            mcp/go.sum
+
+      - uses: azure/setup-helm@v4
+        if: steps.changes.outputs.code == 'true'
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install kind
+        if: steps.changes.outputs.code == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSLo "$RUNNER_TEMP/bin/kind" "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          chmod +x "$RUNNER_TEMP/bin/kind"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Run the suite
+        if: steps.changes.outputs.code == 'true'
+        run: |
+          # One retry at most, and a retry is always reported.
+          if ! make e2e; then
+            echo "::warning title=E2E retried::The first attempt failed and the suite was re-run. Check the e2e-artifacts-attempt-1 artifact for a flaky scenario."
+            [ -d e2e-artifacts ] && mv e2e-artifacts e2e-artifacts-attempt-1
+            make e2e
+          fi
+
+      - name: Upload diagnostics
+        if: always() && steps.changes.outputs.code == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            e2e-artifacts
+            e2e-artifacts-attempt-1
+          if-no-files-found: ignore
+          retention-days: 7

@@ -141,4 +141,7 @@ spec:
     - name: http
       port: {{ $mcp.service.port }}
       targetPort: http
+      {{- if and (eq $mcp.service.type "NodePort") $mcp.service.nodePort }}
+      nodePort: {{ $mcp.service.nodePort }}
+      {{- end }}
 {{- end }}

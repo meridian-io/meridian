@@ -48,6 +48,8 @@ operator:
     port: 8443
     service:
       type: ClusterIP
+      # Fixed node port when type is NodePort (e.g. 30443). Empty picks one.
+      nodePort: ""
 
   resources:
     requests:
@@ -119,6 +121,8 @@ mcp:
   service:
     type: ClusterIP
     port: 8080
+    # Fixed node port when type is NodePort (e.g. 30080). Empty picks one.
+    nodePort: ""
 
   serviceAccount:
     annotations: {}
