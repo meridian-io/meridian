@@ -22,6 +22,7 @@ import (
 	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
 	"github.com/meridian-io/meridian/operator/internal/credentials"
 	"github.com/meridian-io/meridian/operator/internal/gateway"
+	"github.com/meridian-io/meridian/operator/internal/metrics"
 )
 
 const (
@@ -62,7 +63,7 @@ const DefaultClusterConcurrency = 5
 // +kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get
 
-func (r *ClusterController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ClusterController) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, retErr error) {
 	log := log.FromContext(ctx)
 
 	cluster := &meridianv1alpha1.Cluster{}
@@ -72,6 +73,14 @@ func (r *ClusterController) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 		return ctrl.Result{}, err
 	}
+
+	// Count phase changes this reconcile persisted.
+	before := cluster.Status.Phase
+	defer func() {
+		if retErr == nil && cluster.Status.Phase != before {
+			recordTransition(cluster, before)
+		}
+	}()
 
 	// Handle deletion: run pre-delete cleanup then release the finalizer.
 	if !cluster.DeletionTimestamp.IsZero() {
@@ -598,11 +607,13 @@ func (r *ClusterController) reconcileRotation(ctx context.Context, cluster *meri
 
 	rotReq, err := credentials.ParseRotationAnnotation(annotationValue)
 	if err != nil {
+		metrics.CredentialRotations.WithLabelValues("unknown", metrics.ResultInvalid).Inc()
 		return r.clearAnnotationAndFail(ctx, cluster, fmt.Sprintf("malformed rotation annotation: %v", err))
 	}
 
 	cache, ok := r.Cache[rotReq.Provider]
 	if !ok {
+		metrics.CredentialRotations.WithLabelValues(rotReq.Provider, metrics.ResultInvalid).Inc()
 		return r.clearAnnotationAndFail(ctx, cluster,
 			fmt.Sprintf("unknown credential provider %q — operator was not started with this provider", rotReq.Provider))
 	}
@@ -617,6 +628,7 @@ func (r *ClusterController) reconcileRotation(ctx context.Context, cluster *meri
 
 	secret, err := cache.Get(ctx, rotReq.SecretPath)
 	if err != nil {
+		metrics.CredentialRotations.WithLabelValues(rotReq.Provider, metrics.ResultFailure).Inc()
 		return r.handleRotationFailure(ctx, cluster, fmt.Sprintf("fetch secret %q: %v", rotReq.SecretPath, err))
 	}
 
@@ -625,11 +637,14 @@ func (r *ClusterController) reconcileRotation(ctx context.Context, cluster *meri
 		if credentials.IsCatalogNotFound(err) {
 			log.Info("catalog not found during rotation — recreated from secret",
 				"cluster", cluster.Name, "catalog", rotReq.CatalogName)
+			metrics.CredentialRotations.WithLabelValues(rotReq.Provider, metrics.ResultSuccess).Inc()
 			return r.completeRotation(ctx, cluster, rotReq.CatalogName, cache, rotReq.SecretPath)
 		}
+		metrics.CredentialRotations.WithLabelValues(rotReq.Provider, metrics.ResultFailure).Inc()
 		return r.handleRotationFailure(ctx, cluster, fmt.Sprintf("rotate catalog %q: %v", rotReq.CatalogName, err))
 	}
 
+	metrics.CredentialRotations.WithLabelValues(rotReq.Provider, metrics.ResultSuccess).Inc()
 	cache.Invalidate(rotReq.SecretPath)
 	log.Info("credential rotation complete", "cluster", cluster.Name, "catalog", rotReq.CatalogName)
 	return r.completeRotation(ctx, cluster, rotReq.CatalogName, cache, rotReq.SecretPath)
@@ -762,4 +777,16 @@ func (r *ClusterController) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		WithOptions(controller.Options{MaxConcurrentReconciles: n}).
 		Complete(r)
+}
+
+// recordTransition counts a persisted phase change and, for a new cluster
+// becoming Idle, how long provisioning took.
+func recordTransition(c *meridianv1alpha1.Cluster, from meridianv1alpha1.ClusterPhase) {
+	metrics.ClusterPhaseTransitions.WithLabelValues(metrics.PhaseName(from), metrics.PhaseName(c.Status.Phase)).Inc()
+	firstIdle := c.Status.Phase == meridianv1alpha1.ClusterPhaseIdle &&
+		(from == meridianv1alpha1.ClusterPhasePending || from == meridianv1alpha1.ClusterPhaseEmpty)
+	if firstIdle && !c.CreationTimestamp.IsZero() {
+		metrics.ClusterProvisionSeconds.WithLabelValues(c.Namespace, metrics.PoolOf(c), c.Spec.Profile).
+			Observe(time.Since(c.CreationTimestamp.Time).Seconds())
+	}
 }

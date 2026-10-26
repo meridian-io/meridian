@@ -1,0 +1,83 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "meridian.operator.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "meridian.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+    meridian.io/metrics: "true"
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "meridian.operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: 8081
+      targetPort: metrics
+{{- if .Values.mcp.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "meridian.mcp.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "meridian.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+    meridian.io/metrics: "true"
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "meridian.mcp.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+{{- end }}
+{{- if .Values.metrics.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "meridian.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "meridian.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      meridian.io/metrics: "true"
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      # Keep Meridian's own namespace and pool labels (the pool's namespace)
+      # instead of renaming them to exported_namespace.
+      honorLabels: true
+{{- end }}
+{{- end }}
+{{- if .Values.metrics.dashboard.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "meridian.fullname" . }}-dashboard
+  namespace: {{ .Values.metrics.dashboard.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "meridian.labels" . | nindent 4 }}
+    {{- with .Values.metrics.dashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  meridian.json: |-
+    {{- .Files.Get "dashboards/meridian.json" | nindent 4 }}
+{{- end }}

@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/meridian-io/meridian/mcp/internal/k8s"
+	"github.com/meridian-io/meridian/mcp/internal/metrics"
 	"github.com/meridian-io/meridian/mcp/internal/tools"
 )
 
@@ -130,7 +132,10 @@ func New(c *k8s.Client, version string, opts Options) (*server.MCPServer, []stri
 		if e.tool.Title == "" {
 			e.tool.Title = toolTitles[name]
 		}
-		s.AddTool(e.tool, toolErrorsAsResults(e.handler))
+		s.AddTool(e.tool, instrument(name, toolErrorsAsResults(e.handler)))
+		// Create the series at zero so rates and alerts work before the first call.
+		metrics.ToolCalls.WithLabelValues(name, metrics.ResultOK)
+		metrics.ToolCalls.WithLabelValues(name, metrics.ResultError)
 		names = append(names, name)
 	}
 
@@ -166,6 +171,24 @@ var toolTitles = map[string]string{
 	"remove_catalog":      "Remove catalog",
 	"rotate_credentials":  "Rotate credentials",
 	"promote_environment": "Promote environment",
+}
+
+// instrument counts each call by result and records its duration. A panic is
+// counted as an error and then re-raised for the server's recovery handler.
+func instrument(name string, h handlerFunc) handlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (res *mcp.CallToolResult, err error) {
+		start := time.Now()
+		result := metrics.ResultError
+		defer func() {
+			metrics.ToolCalls.WithLabelValues(name, result).Inc()
+			metrics.ToolDuration.WithLabelValues(name).Observe(time.Since(start).Seconds())
+		}()
+		res, err = h(ctx, req)
+		if err == nil && res != nil && !res.IsError {
+			result = metrics.ResultOK
+		}
+		return res, err
+	}
 }
 
 // toolErrorsAsResults turns a handler error into a tool result with

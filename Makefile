@@ -112,8 +112,8 @@ e2e:
 helm-lint:
 	$(HELM) lint $(CHART) --strict
 	$(HELM) lint $(CHART) --strict -f hack/helm/ci-values.yaml
-	$(HELM) template meridian $(CHART) -n meridian | $(KUBECONFORM) -strict -summary -
-	$(HELM) template meridian $(CHART) -n meridian -f hack/helm/ci-values.yaml | $(KUBECONFORM) -strict -summary -
+	$(HELM) template meridian $(CHART) -n meridian | $(KUBECONFORM) -strict -summary -skip ServiceMonitor -
+	$(HELM) template meridian $(CHART) -n meridian -f hack/helm/ci-values.yaml | $(KUBECONFORM) -strict -summary -skip ServiceMonitor -
 
 helm-install:
 	$(HELM) upgrade --install meridian $(CHART) --namespace meridian --create-namespace

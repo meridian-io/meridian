@@ -21,6 +21,7 @@ import (
 	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
 	"github.com/meridian-io/meridian/operator/internal/controller"
 	"github.com/meridian-io/meridian/operator/internal/credentials"
+	"github.com/meridian-io/meridian/operator/internal/metrics"
 	"github.com/meridian-io/meridian/operator/rest"
 )
 
@@ -176,6 +177,9 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("credential provider initialised", "provider", credentialProvider)
+
+	// Meridian metrics on the same endpoint as the controller-runtime ones.
+	metrics.Register(mgr.GetClient(), credentialProvider)
 
 	if err = (&controller.ClusterController{
 		Client:                  mgr.GetClient(),

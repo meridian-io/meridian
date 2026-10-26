@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
+	"github.com/meridian-io/meridian/operator/internal/metrics"
 )
 
 const (
@@ -60,10 +61,12 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 	pool := &meridianv1alpha1.ClusterPool{}
 	if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
 		if apierrors.IsNotFound(err) {
+			metrics.ForgetPool(req.Namespace, req.Name)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
+	metrics.InitPool(pool.Namespace, pool.Name, pool.Spec.Template.Profile)
 
 	clusters, err := r.listPoolClusters(ctx, pool)
 	if err != nil {
@@ -91,7 +94,7 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 	//    already broken and must be replaced by the pool).
 	for _, c := range failed {
 		log.Info("deleting failed cluster", "cluster", c.Name)
-		if err := r.Delete(ctx, &c); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.deleteCluster(ctx, pool, &c, metrics.ReasonFailed); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -99,7 +102,7 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 	// 1b. Delete ALL degraded clusters immediately — pool creates replacements.
 	for _, c := range degraded {
 		log.Info("deleting degraded cluster", "cluster", c.Name)
-		if err := r.Delete(ctx, &c); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.deleteCluster(ctx, pool, &c, metrics.ReasonDegraded); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -116,6 +119,8 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 			c.Spec.ReservationID = ""
 			if err := r.Update(ctx, c); err != nil && !apierrors.IsNotFound(err) {
 				log.Error(err, "failed to release expired reservation", "cluster", c.Name)
+			} else if err == nil {
+				metrics.ReservationsExpired.WithLabelValues(pool.Namespace, pool.Name).Inc()
 			}
 		}
 	}
@@ -132,7 +137,7 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 				"cluster", c.Name,
 				"current", c.Spec.Image,
 				"target", pool.Spec.Template.Image)
-			if err := r.Delete(ctx, &c); err != nil && !apierrors.IsNotFound(err) {
+			if err := r.deleteCluster(ctx, pool, &c, metrics.ReasonImage); err != nil {
 				return ctrl.Result{}, err
 			}
 			total--
@@ -151,7 +156,7 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 					log.Info("age recycling: replacing aged-out cluster",
 						"cluster", c.Name,
 						"age", time.Since(c.CreationTimestamp.Time).Round(time.Second))
-					if err := r.Delete(ctx, &c); err != nil && !apierrors.IsNotFound(err) {
+					if err := r.deleteCluster(ctx, pool, &c, metrics.ReasonAge); err != nil {
 						return ctrl.Result{}, err
 					}
 					total--
@@ -188,7 +193,7 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 	if !rollingUpgrade && total > desired && len(idle) > 0 {
 		oldest := oldestCluster(idle)
 		log.Info("scaling down, deleting idle cluster", "cluster", oldest.Name)
-		if err := r.Delete(ctx, oldest); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.deleteCluster(ctx, pool, oldest, metrics.ReasonScaleDown); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -204,6 +209,23 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	return ctrl.Result{RequeueAfter: reconcileInterval}, nil
+}
+
+// deleteCluster deletes one of the pool's clusters and counts it by reason.
+// A cluster that is already gone, or already being deleted (the cache can
+// still show it on the next reconcile), is not deleted or counted again.
+func (r *ClusterPoolController) deleteCluster(ctx context.Context, pool *meridianv1alpha1.ClusterPool, c *meridianv1alpha1.Cluster, reason string) error {
+	if c.DeletionTimestamp != nil {
+		return nil
+	}
+	if err := r.Delete(ctx, c); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	metrics.PoolClustersReplaced.WithLabelValues(pool.Namespace, pool.Name, reason).Inc()
+	return nil
 }
 
 // reservationTTL parses pool.Spec.ReservationTTL or falls back to the default.

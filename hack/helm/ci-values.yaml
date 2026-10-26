@@ -19,3 +19,10 @@ mcp:
   service:
     type: NodePort
     nodePort: 30080
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: prometheus
+  dashboard:
+    enabled: true
