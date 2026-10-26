@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -34,7 +33,7 @@ func newTestHTTP(t *testing.T, o HTTPOptions) *httptest.Server {
 	if o.Ready == nil {
 		o.Ready = ready
 	}
-	h, _ := NewHTTPHandler(s, o)
+	h := NewHTTPHandler(s, o)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv
@@ -288,49 +287,26 @@ func TestAnyReplicaServesAnyRequest(t *testing.T) {
 	}
 }
 
-// readFirstSSEEvent opens GET /sse and returns the first event block.
-func readFirstSSEEvent(t *testing.T, url, auth string) (int, string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url+"/sse", nil)
-	if auth != "" {
-		req.Header.Set("Authorization", auth)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return resp.StatusCode, ""
-	}
-	var ev strings.Builder
-	sc := bufio.NewScanner(resp.Body)
-	for sc.Scan() {
-		if sc.Text() == "" && ev.Len() > 0 {
-			break
+// TestLegacySSERemoved: the deprecated HTTP+SSE transport was removed in
+// v1.5. /sse and /message no longer exist, even with a valid token.
+func TestLegacySSERemoved(t *testing.T) {
+	srv := newTestHTTP(t, HTTPOptions{Token: testToken})
+	for _, route := range []struct{ method, path string }{{http.MethodGet, "/sse"}, {http.MethodPost, "/message"}} {
+		req, _ := http.NewRequest(route.method, srv.URL+route.path, strings.NewReader("{}"))
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
 		}
-		ev.WriteString(sc.Text() + "\n")
-	}
-	return resp.StatusCode, ev.String()
-}
-
-func TestLegacySSETransport(t *testing.T) {
-	on := newTestHTTP(t, HTTPOptions{Token: testToken, LegacySSE: true})
-	code, ev := readFirstSSEEvent(t, on.URL, "Bearer "+testToken)
-	if code != http.StatusOK || !strings.Contains(ev, "event: endpoint") || !strings.Contains(ev, "data: /message?sessionId=") {
-		t.Errorf("legacy /sse = %d, first event %q", code, ev)
-	}
-
-	off := newTestHTTP(t, HTTPOptions{Token: testToken, LegacySSE: false})
-	if code, _ := readFirstSSEEvent(t, off.URL, "Bearer "+testToken); code != http.StatusNotFound {
-		t.Errorf("/sse with legacy SSE off = %d, want 404", code)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s %s = %d, want 404", route.method, route.path, resp.StatusCode)
+		}
 	}
 }
 
 func TestAuthOnEveryMCPRoute(t *testing.T) {
-	srv := newTestHTTP(t, HTTPOptions{Token: testToken, LegacySSE: true})
+	srv := newTestHTTP(t, HTTPOptions{Token: testToken})
 	do := func(method, path, auth string) int {
 		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader("{}"))
 		if auth != "" {
@@ -349,7 +325,7 @@ func TestAuthOnEveryMCPRoute(t *testing.T) {
 		}
 	}
 	for _, route := range []struct{ method, path string }{
-		{http.MethodPost, "/mcp"}, {http.MethodGet, "/sse"}, {http.MethodPost, "/message"},
+		{http.MethodPost, "/mcp"},
 	} {
 		for _, auth := range []string{"", "Bearer wrong", "Basic " + testToken, "Bearer " + testToken + "x"} {
 			if code := do(route.method, route.path, auth); code != http.StatusUnauthorized {
@@ -526,9 +502,9 @@ func TestLocalhostProtection(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	on := newTestHTTP(t, HTTPOptions{Token: testToken, LegacySSE: true})
-	off := newTestHTTP(t, HTTPOptions{Token: testToken, LegacySSE: true, DisableLocalhostProtection: true})
-	for _, route := range []struct{ method, path string }{{http.MethodPost, "/mcp"}, {http.MethodGet, "/sse"}} {
+	on := newTestHTTP(t, HTTPOptions{Token: testToken})
+	off := newTestHTTP(t, HTTPOptions{Token: testToken, DisableLocalhostProtection: true})
+	for _, route := range []struct{ method, path string }{{http.MethodPost, "/mcp"}} {
 		if code := status(on, route.method, route.path); code != http.StatusForbidden {
 			t.Errorf("protected %s %s with foreign Host = %d, want 403", route.method, route.path, code)
 		}
@@ -559,84 +535,5 @@ func TestBodyLimitChunked(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Errorf("oversized chunked body = %d, want 413", resp.StatusCode)
-	}
-}
-
-// TestLegacySSEFullFlow runs a 2024-11-05 client end to end: open /sse, POST
-// initialize and a tool call to /message, read the replies off the stream.
-func TestLegacySSEFullFlow(t *testing.T) {
-	srv := newTestHTTP(t, HTTPOptions{Token: testToken, LegacySSE: true})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/sse", nil)
-	req.Header.Set("Authorization", "Bearer "+testToken)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	events := make(chan string, 16)
-	go func() {
-		sc := bufio.NewScanner(resp.Body)
-		sc.Buffer(make([]byte, 1<<20), 1<<20)
-		for sc.Scan() {
-			if line := sc.Text(); strings.HasPrefix(line, "data:") {
-				events <- strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			}
-		}
-		close(events)
-	}()
-	next := func() string {
-		select {
-		case e := <-events:
-			return e
-		case <-ctx.Done():
-			t.Fatal("timed out waiting for an SSE event")
-			return ""
-		}
-	}
-	endpoint := next()
-	if !strings.HasPrefix(endpoint, "/message?sessionId=") {
-		t.Fatalf("first event %q is not the message endpoint", endpoint)
-	}
-	send := func(msg map[string]any) {
-		b, _ := json.Marshal(msg)
-		r, _ := http.NewRequest(http.MethodPost, srv.URL+endpoint, bytes.NewReader(b))
-		r.Header.Set("Authorization", "Bearer "+testToken)
-		r.Header.Set("Content-Type", "application/json")
-		pr, err := http.DefaultClient.Do(r)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pr.Body.Close()
-		if pr.StatusCode != http.StatusAccepted {
-			t.Fatalf("POST %s = %d, want 202", endpoint, pr.StatusCode)
-		}
-	}
-	send(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{
-		"protocolVersion": "2024-11-05", "capabilities": map[string]any{},
-		"clientInfo": map[string]any{"name": "old", "version": "1"}}})
-	if init := next(); !strings.Contains(init, `"id":1`) || strings.Contains(init, `"error"`) {
-		t.Fatalf("initialize reply: %s", init)
-	}
-	send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
-	send(legacyCall("list_clusters"))
-	if call := next(); !strings.Contains(call, `"id":2`) || strings.Contains(call, `"error"`) || strings.Contains(call, `"isError":true`) {
-		t.Fatalf("tools/call reply: %s", call)
-	}
-}
-
-func TestOriginValidationOnLegacySSE(t *testing.T) {
-	srv := newTestHTTP(t, HTTPOptions{Token: testToken, LegacySSE: true})
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/sse", nil)
-	req.Header.Set("Authorization", "Bearer "+testToken)
-	req.Header.Set("Origin", "https://evil.example")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("/sse with foreign Origin = %d, want 403", resp.StatusCode)
 	}
 }

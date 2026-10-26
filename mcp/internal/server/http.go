@@ -64,10 +64,6 @@ const DefaultMaxBodyBytes = 1 << 20 // 1 MiB
 type MuxOptions struct {
 	// MCP serves the Streamable HTTP endpoint (/mcp).
 	MCP http.Handler
-	// LegacySSE and LegacyMessage serve the deprecated HTTP+SSE transport
-	// (/sse and /message). Both nil disables it.
-	LegacySSE     http.Handler
-	LegacyMessage http.Handler
 	// Token is the bearer token required on every MCP route. Empty disables auth.
 	Token string
 	// AllowedOrigins lists origins (e.g. https://app.example.com) whose
@@ -115,10 +111,6 @@ func NewMux(o MuxOptions) *http.ServeMux {
 	}
 
 	mux.Handle("/mcp", protect(o.MCP))
-	if o.LegacySSE != nil && o.LegacyMessage != nil {
-		mux.Handle("/sse", protect(o.LegacySSE))
-		mux.Handle("/message", protect(o.LegacyMessage))
-	}
 	return mux
 }
 
@@ -168,53 +160,25 @@ func LimitBody(max int64, next http.Handler) http.Handler {
 
 // HTTPOptions configures remote (http) mode.
 type HTTPOptions struct {
-	Token          string
-	AllowedOrigins []string
-	// LegacySSE also serves the deprecated HTTP+SSE transport.
-	LegacySSE bool
-	// BaseURL is the public URL for legacy SSE message endpoints. Empty sends
-	// a relative endpoint.
-	BaseURL                    string
+	Token                      string
+	AllowedOrigins             []string
 	DisableLocalhostProtection bool
 	Ready                      ReadyFunc
-	// HTTPServer is shut down by the legacy SSE server, which closes its
-	// long-lived streams first.
-	HTTPServer *http.Server
 }
 
 // NewHTTPHandler builds every route for http mode: stateless Streamable HTTP
-// at /mcp (any replica can answer any request), optional legacy HTTP+SSE,
-// and health checks. The returned SSE server is nil when legacy SSE is off.
-func NewHTTPHandler(s *server.MCPServer, o HTTPOptions) (http.Handler, *server.SSEServer) {
+// at /mcp (any replica can answer any request) and health checks. The
+// deprecated HTTP+SSE transport (/sse, /message) was removed in v1.5.
+func NewHTTPHandler(s *server.MCPServer, o HTTPOptions) http.Handler {
 	streamable := server.NewStreamableHTTPServer(s,
 		server.WithStateLess(true),
 		server.WithDisableLocalhostProtection(o.DisableLocalhostProtection),
 		server.WithStreamableHTTPLogger(slog.Default()),
 	)
-	mux := MuxOptions{
+	return NewMux(MuxOptions{
 		MCP:            streamable,
 		Token:          o.Token,
 		AllowedOrigins: o.AllowedOrigins,
 		Ready:          o.Ready,
-	}
-
-	var sse *server.SSEServer
-	if o.LegacySSE {
-		sseOpts := []server.SSEOption{
-			server.WithKeepAlive(true),
-			server.WithSSEDisableLocalhostProtection(o.DisableLocalhostProtection),
-		}
-		if o.HTTPServer != nil {
-			sseOpts = append(sseOpts, server.WithHTTPServer(o.HTTPServer))
-		}
-		if o.BaseURL != "" {
-			sseOpts = append(sseOpts, server.WithBaseURL(o.BaseURL))
-		} else {
-			sseOpts = append(sseOpts, server.WithUseFullURLForMessageEndpoint(false))
-		}
-		sse = server.NewSSEServer(s, sseOpts...)
-		mux.LegacySSE = sse.SSEHandler()
-		mux.LegacyMessage = sse.MessageHandler()
-	}
-	return NewMux(mux), sse
+	})
 }

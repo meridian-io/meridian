@@ -14,10 +14,8 @@ mcp:
     existingSecret: meridian-mcp-token
   enableTools: ["all"]
   replicas: 2
-  legacySSE: false
   allowedOrigins: ["https://app.example.com"]
   extraNamespaces: ["meridian-staging"]
-  baseURL: https://meridian.example.com
   service:
     type: NodePort
     nodePort: 30080
