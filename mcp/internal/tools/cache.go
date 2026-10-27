@@ -26,6 +26,9 @@ type queryCache struct {
 	// generations counts invalidations per coordinator prefix. A query that
 	// started before an invalidation must not store its (stale) result.
 	generations map[string]uint64
+	// catalogVersions holds the last catalog version seen per coordinator
+	// prefix (see observeCatalogVersion).
+	catalogVersions map[string]string
 }
 
 type cacheEntry struct {
@@ -54,10 +57,11 @@ func SetCacheMaxEntries(n int) {
 
 func newQueryCache(maxEntries int) *queryCache {
 	c := &queryCache{
-		entries:     make(map[string]*cacheEntry),
-		inflight:    make(map[string]*inflightCall),
-		maxEntries:  maxEntries,
-		generations: make(map[string]uint64),
+		entries:         make(map[string]*cacheEntry),
+		inflight:        make(map[string]*inflightCall),
+		maxEntries:      maxEntries,
+		generations:     make(map[string]uint64),
+		catalogVersions: make(map[string]string),
 	}
 	go c.cleanup()
 	return c
@@ -133,6 +137,21 @@ func (c *queryCache) invalidatePrefix(prefix string) {
 		if strings.HasPrefix(key, prefix) {
 			delete(c.entries, key)
 		}
+	}
+}
+
+// observeCatalogVersion records a cluster's catalog version and drops the
+// coordinator's cached results when it changed. The version comes from the
+// Cluster resource, which every replica reads on each call, so a rotation by
+// the operator or a catalog change made through another MCP replica clears
+// this replica's cache too.
+func (c *queryCache) observeCatalogVersion(prefix, version string) {
+	c.mu.Lock()
+	prev, seen := c.catalogVersions[prefix]
+	c.catalogVersions[prefix] = version
+	c.mu.Unlock()
+	if seen && prev != version {
+		c.invalidatePrefix(prefix)
 	}
 }
 

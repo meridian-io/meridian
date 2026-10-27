@@ -2,12 +2,16 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/meridian-io/meridian/mcp/internal/k8s"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // ── add_catalog ───────────────────────────────────────────────────────────────
@@ -50,9 +54,7 @@ func AddCatalogHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequest)
 		if err := executeTrinoSQL(ctx, coordinatorURL, sql); err != nil {
 			return nil, fmt.Errorf("add catalog %q: %w", catalogName, err)
 		}
-
-		// Bust SHOW CATALOGS cache for this coordinator.
-		globalCache.invalidatePrefix(coordinatorPrefix(coordinatorURL))
+		markCatalogsChanged(ctx, c, clusterName, ns, coordinatorURL)
 
 		return mcp.NewToolResultText(fmt.Sprintf("Catalog %q added to cluster %q.", catalogName, clusterName)), nil
 	}
@@ -89,9 +91,7 @@ func RemoveCatalogHandler(c *k8s.Client) func(context.Context, mcp.CallToolReque
 		if err := executeTrinoSQL(ctx, coordinatorURL, sql); err != nil {
 			return nil, fmt.Errorf("remove catalog %q: %w", catalogName, err)
 		}
-
-		// Bust SHOW CATALOGS cache for this coordinator.
-		globalCache.invalidatePrefix(coordinatorPrefix(coordinatorURL))
+		markCatalogsChanged(ctx, c, clusterName, ns, coordinatorURL)
 
 		return mcp.NewToolResultText(fmt.Sprintf("Catalog %q removed from cluster %q.", catalogName, clusterName)), nil
 	}
@@ -104,11 +104,41 @@ func getCoordinatorURL(ctx context.Context, c *k8s.Client, clusterName, ns strin
 	if err != nil {
 		return "", fmt.Errorf("get cluster %q: %w", clusterName, err)
 	}
+	if cluster.GetDeletionTimestamp() != nil {
+		return "", fmt.Errorf("cluster %q is being deleted", clusterName)
+	}
 	url := strFromObj(cluster.Object, "status", "coordinatorUrl")
 	if url == "" {
 		return "", fmt.Errorf("cluster %q has no coordinator URL — is it Ready?", clusterName)
 	}
+	globalCache.observeCatalogVersion(coordinatorPrefix(url), catalogVersion(cluster))
 	return url, nil
+}
+
+// catalogsChangedAnnotation is stamped on a Cluster when add_catalog or
+// remove_catalog changes its catalogs, so every MCP replica notices.
+const catalogsChangedAnnotation = "meridian.io/catalogs-changed-at"
+
+// catalogVersion changes whenever the cluster's catalogs may have changed: a
+// credential rotation, an add_catalog/remove_catalog, or a new cluster that
+// reuses the name (and so the coordinator URL).
+func catalogVersion(cluster *unstructured.Unstructured) string {
+	return string(cluster.GetUID()) + "|" +
+		strFromObj(cluster.Object, "status", "lastRotatedAt") + "|" +
+		cluster.GetAnnotations()[catalogsChangedAnnotation]
+}
+
+// markCatalogsChanged drops this replica's cached results for the cluster and
+// stamps the Cluster so other replicas drop theirs.
+func markCatalogsChanged(ctx context.Context, c *k8s.Client, clusterName, ns, coordinatorURL string) {
+	globalCache.invalidatePrefix(coordinatorPrefix(coordinatorURL))
+	patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{
+		"annotations": map[string]string{catalogsChangedAnnotation: time.Now().UTC().Format(time.RFC3339Nano)},
+	}})
+	if _, err := c.PatchCluster(ctx, clusterName, ns, patch); err != nil {
+		slog.Warn("could not mark catalogs changed; other MCP replicas may show cached catalogs for up to 5 minutes",
+			"cluster", clusterName, "error", err)
+	}
 }
 
 // parseProperties parses Java properties format (key=value, one per line).

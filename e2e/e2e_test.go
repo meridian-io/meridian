@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // TestE2E runs the scenarios in order on one install. Each scenario starts by
@@ -44,11 +47,15 @@ func TestE2E(t *testing.T) {
 	t.Run("reserve and release over rest", s.restReserveRelease)
 	t.Run("reserve and release over mcp", s.mcpReserveRelease)
 	t.Run("scale pool", s.scalePool)
+	t.Run("autoscaler grows a busy pool once", s.autoscaler)
 	t.Run("sample catalog on every cluster", s.sampleCatalog)
 	t.Run("coordinator crash recovery", s.coordinatorCrash)
+	t.Run("reserved cluster survives a coordinator crash", s.reservedCoordinatorCrash)
 	t.Run("credential rotation", s.credentialRotation)
 	t.Run("mcp rolling restart drops no calls", s.mcpRollingRestart)
 	t.Run("metrics are exported", s.metricsExported)
+	// Last: restarting the operator resets the counters checked above.
+	t.Run("operator restart hands over leadership quickly", s.operatorHandover)
 }
 
 type suite struct {
@@ -396,6 +403,82 @@ func (s *suite) scalePool(t *testing.T) {
 	s.ready(t)
 }
 
+// Scenario 5b: reserve every cluster in a pool with an autoscaler. The pool
+// must grow to ceil(reserved / 0.70) and stay there: no overshoot to max, and
+// no new cluster deleted right after it starts.
+func (s *suite) autoscaler(t *testing.T) {
+	k := s.k
+	s.ready(t)
+	rest := newRESTClient(s.pki.pool, s.pki.clientCert(t, "e2e-autoscale"))
+	want := int64(math.Ceil(float64(poolSize) / 0.70))
+
+	var rids []string
+	t.Cleanup(func() {
+		for _, rid := range rids {
+			_, _, _ = rest.do(http.MethodDelete, "/api/v1/clusters/reservations/"+rid, nil)
+		}
+		_ = k.dyn.Resource(scalerGVR).Namespace(k.ns).Delete(ctx(), poolName, metav1.DeleteOptions{})
+		patch := []byte(fmt.Sprintf(`{"spec":{"replicas":%d}}`, poolSize))
+		_, _ = k.dyn.Resource(poolGVR).Namespace(k.ns).Patch(ctx(), poolName, types.MergePatchType, patch, metav1.PatchOptions{})
+		s.ready(t)
+	})
+	for i := 0; i < poolSize; i++ {
+		rid := "r-autoscale-" + randHex(4)
+		code, body, err := rest.do(http.MethodPost, "/api/v1/clusters/reservations",
+			map[string]string{"reservationId": rid, "profile": profileName})
+		if err != nil || code != http.StatusCreated {
+			t.Fatalf("reserve %d: %d %v %s", i+1, code, err, body)
+		}
+		rids = append(rids, rid)
+	}
+
+	scaler := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "meridian.io/v1alpha1",
+		"kind":       "ClusterPoolAutoscaler",
+		"metadata":   map[string]any{"name": poolName, "namespace": k.ns},
+		"spec": map[string]any{
+			"targetRef":            map[string]any{"name": poolName},
+			"minReplicas":          int64(poolSize),
+			"maxReplicas":          int64(poolSize + 2),
+			"utilizationThreshold": "0.70",
+		},
+	}}
+	if _, err := k.dyn.Resource(scalerGVR).Namespace(k.ns).Create(ctx(), scaler, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create autoscaler: %v", err)
+	}
+
+	eventually(t, 2*time.Minute, fmt.Sprintf("pool grows to %d", want), func() (bool, string) {
+		n := k.poolReplicas(t)
+		return n == want, fmt.Sprintf("spec.replicas=%d", n)
+	})
+	cs := k.waitPool(t, int(want), int(want)-poolSize, clusterReadyTimeout)
+	names := map[string]bool{}
+	for _, c := range cs {
+		names[c.name] = true
+	}
+
+	// Two autoscaler intervals with the new cluster ready: nothing may change.
+	deadline := time.Now().Add(75 * time.Second)
+	for time.Now().Before(deadline) {
+		if n := k.poolReplicas(t); n != want {
+			t.Fatalf("spec.replicas changed to %d, want it to stay %d", n, want)
+		}
+		now, err := k.poolClusters(poolName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range now {
+			if !names[c.name] {
+				t.Fatalf("pool replaced clusters while steady: %s", phases(now))
+			}
+		}
+		if len(now) != int(want) {
+			t.Fatalf("pool has %d clusters, want %d: %s", len(now), want, phases(now))
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
 // tpchQuery reads the sample catalog; tpch.tiny.nation has 25 rows.
 const tpchQuery = "SELECT 'e2e-nation-' || CAST(count(*) AS varchar) FROM tpch.tiny.nation"
 
@@ -453,6 +536,71 @@ func (s *suite) coordinatorCrash(t *testing.T) {
 	}
 }
 
+// Scenario 6b: kill the coordinator of a reserved cluster. The cluster must
+// stay Reserved by the same client, with the same reservedAt, and answer
+// queries again once the coordinator is back. It used to go back to Pending,
+// and a cluster older than 15 minutes was then failed and deleted.
+func (s *suite) reservedCoordinatorCrash(t *testing.T) {
+	k := s.k
+	s.ready(t)
+	rest := newRESTClient(s.pki.pool, s.pki.clientCert(t, "e2e-crash"))
+	rid := "r-crash-" + randHex(4)
+	code, body, err := rest.do(http.MethodPost, "/api/v1/clusters/reservations",
+		map[string]string{"reservationId": rid, "profile": profileName})
+	if err != nil || code != http.StatusCreated {
+		t.Fatalf("reserve: %d %v %s", code, err, body)
+	}
+	t.Cleanup(func() {
+		_, _, _ = rest.do(http.MethodDelete, "/api/v1/clusters/reservations/"+rid, nil)
+	})
+	var r reservation
+	if err := json.Unmarshal(body, &r); err != nil {
+		t.Fatal(err)
+	}
+	k.waitPhase(t, r.ClusterName, "Reserved", time.Minute)
+	reservedAt := func() string {
+		u, err := k.dyn.Resource(clusterGVR).Namespace(k.ns).Get(ctx(), r.ClusterName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("get %s: %v", r.ClusterName, err)
+		}
+		v, _, _ := unstructured.NestedString(u.Object, "status", "reservedAt")
+		return v
+	}
+	before := reservedAt()
+
+	err = k.core.CoreV1().Pods(k.ns).DeleteCollection(ctx(), metav1.DeleteOptions{
+		GracePeriodSeconds: new(int64),
+	}, metav1.ListOptions{LabelSelector: "meridian.io/role=coordinator,meridian.io/cluster=" + r.ClusterName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("killed the coordinator of reserved cluster %s", r.ClusterName)
+
+	// Watch it until the coordinator is back and answering queries.
+	deadline := time.Now().Add(clusterReadyTimeout)
+	for {
+		c, ok, err := k.getCluster(r.ClusterName)
+		switch {
+		case err != nil:
+			t.Fatal(err)
+		case !ok:
+			t.Fatalf("reserved cluster %s was deleted", r.ClusterName)
+		case c.phase != "Reserved" || c.clientID != "e2e-crash":
+			t.Fatalf("reserved cluster %s is now phase=%s clientId=%q", r.ClusterName, c.phase, c.clientID)
+		}
+		if out, err := s.mcp.query(r.ClusterName, nodesQuery); err == nil && strings.Contains(out, "e2e-nodes-2") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not answer queries again within %v", r.ClusterName, clusterReadyTimeout)
+		}
+		time.Sleep(3 * time.Second)
+	}
+	if after := reservedAt(); after != before {
+		t.Errorf("reservedAt changed from %s to %s: the reservation timer was reset", before, after)
+	}
+}
+
 // Scenario 8: rotate a catalog from a Kubernetes Secret through MCP. The tpch
 // connector needs no external database.
 func (s *suite) credentialRotation(t *testing.T) {
@@ -491,6 +639,56 @@ func (s *suite) credentialRotation(t *testing.T) {
 
 // Scenario 7: restart the MCP Deployment under steady load through the
 // Service. With the shutdown drain, no call may fail.
+// leaderLease is the operator's leader-election Lease.
+const leaderLease = "meridian-operator-leader.meridian.io"
+
+// Scenario 9b: restart the operator. The stopping leader gives up its lease,
+// so the new pod takes over within seconds instead of waiting ~15s for the
+// lease to expire, with no controller running in between.
+func (s *suite) operatorHandover(t *testing.T) {
+	k := s.k
+	s.ready(t)
+	name := k.deploymentByComponent(t, "operator")
+	holder := func() string {
+		l, err := k.core.CoordinationV1().Leases(k.ns).Get(ctx(), leaderLease, metav1.GetOptions{})
+		if err != nil || l.Spec.HolderIdentity == nil {
+			return ""
+		}
+		return strings.SplitN(*l.Spec.HolderIdentity, "_", 2)[0] // "<pod>_<uid>"
+	}
+	old := holder()
+	if old == "" {
+		t.Fatal("no operator holds the leader lease")
+	}
+
+	run(t, "kubectl", "-n", k.ns, "rollout", "restart", "deployment/"+name)
+	// Poll tightly: the point is to time the handover.
+	waitFor := func(timeout time.Duration, what string, cond func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(timeout); !cond(); time.Sleep(200 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out after %v waiting for %s", timeout, what)
+			}
+		}
+	}
+	waitFor(4*time.Minute, "old leader "+old+" to start stopping", func() bool {
+		p, err := k.core.CoreV1().Pods(k.ns).Get(ctx(), old, metav1.GetOptions{})
+		return apierrors.IsNotFound(err) || (err == nil && p.DeletionTimestamp != nil)
+	})
+	stopping := time.Now()
+	waitFor(time.Minute, "a new pod to take the lease", func() bool {
+		h := holder()
+		return h != "" && h != old
+	})
+	took := time.Since(stopping)
+	t.Logf("new leader took over %.1fs after the old one began stopping", took.Seconds())
+	if took > 8*time.Second {
+		t.Errorf("handover took %v, want under 8s", took)
+	}
+	run(t, "kubectl", "-n", k.ns, "rollout", "status", "deployment/"+name, "--timeout", "3m")
+	s.ready(t)
+}
+
 func (s *suite) mcpRollingRestart(t *testing.T) {
 	k := s.k
 	s.ready(t)

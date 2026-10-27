@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stesting "k8s.io/client-go/testing"
@@ -476,5 +479,124 @@ func TestScalePoolReturnsCounts(t *testing.T) {
 	out := mustCall(t, ScalePoolHandler(c), map[string]any{"pool_name": "p", "replicas": float64(4)})
 	if !strings.Contains(out, `"desiredReplicas": 4`) || !strings.Contains(out, `"previousReplicas": 1`) || strings.Contains(out, `"status"`) {
 		t.Errorf("unexpected scale_pool output: %s", out)
+	}
+}
+
+// An agent holding an old reservation_id must not release a newer
+// reservation of the same cluster.
+func TestReleaseChecksReservationID(t *testing.T) {
+	c, _, _ := newTestClient(t, poolObj("p", 1, ""),
+		clusterObj(clusterFixture{name: "a", phase: "Reserved", ready: true, clientID: "agent", reservationID: "r2"}))
+	wantErr(t, ReleaseClusterHandler(c), map[string]any{"cluster_name": "a", "client_id": "agent", "reservation_id": "r1"}, "no longer holds")
+	got, _ := c.GetCluster(context.Background(), "a", "")
+	if strFromObj(got.Object, "spec", "reservationId") != "r2" {
+		t.Fatal("the newer reservation was released")
+	}
+	mustCall(t, ReleaseClusterHandler(c), map[string]any{"cluster_name": "a", "client_id": "agent", "reservation_id": "r2"})
+}
+
+// A repeated reserve call is not answered with a failed cluster.
+func TestReserveIgnoresFailedClusterWithSameReservation(t *testing.T) {
+	c, _, _ := newTestClient(t, poolObj("p", 1, ""),
+		clusterObj(clusterFixture{name: "a", phase: "Failed", clientID: "ci", reservationID: "r1"}))
+	wantErr(t, ReserveClusterHandler(c), map[string]any{"cluster_name": "a", "client_id": "ci", "reservation_id": "r1"}, "not available")
+}
+
+// A coordinator that doesn't answer connections (a pod that was just killed)
+// fails within the dial timeout instead of hanging for the 30s default.
+func TestTrinoUnreachableFailsFast(t *testing.T) {
+	oldDial, oldTimeout := trinoDial, trinoDialTimeout
+	t.Cleanup(func() { trinoDial, trinoDialTimeout = oldDial, oldTimeout })
+	trinoDialTimeout = 200 * time.Millisecond
+	trinoDial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		<-ctx.Done() // never answers, like a dead pod's address
+		return nil, ctx.Err()
+	}
+	start := time.Now()
+	_, err := trinoCall(context.Background(), http.MethodPost, "http://dead-coordinator.invalid:8080/v1/statement", "SELECT 1")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("took %v, want about the 200ms dial timeout", d)
+	}
+}
+
+// Queries on a cluster that is being deleted fail at once with a clear error.
+func TestQueryOnDeletingClusterFailsFast(t *testing.T) {
+	cl := clusterObj(clusterFixture{name: "going", phase: "Idle", ready: true, coordinatorUrl: "http://going:8080"})
+	now := metav1.Now()
+	cl.SetDeletionTimestamp(&now)
+	cl.SetFinalizers([]string{"meridian.io/cluster-protection"})
+	c, _, _ := newTestClient(t, poolObj("p", 1, ""), cl)
+	if _, err := getCoordinatorURL(context.Background(), c, "going", ""); err == nil || !strings.Contains(err.Error(), "being deleted") {
+		t.Errorf("got %v, want a 'being deleted' error", err)
+	}
+}
+
+// setClusterField updates a Cluster in the fake API server, as the operator
+// or another MCP replica would.
+func setClusterField(t *testing.T, c *k8s.Client, mutate func(*unstructured.Unstructured)) {
+	t.Helper()
+	cl, err := c.GetCluster(context.Background(), "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutate(cl)
+	if _, err := c.Dynamic.Resource(k8s.ClusterGVR).Namespace(testNS).Update(context.Background(), cl, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A credential rotation finished by the operator changes the cluster's
+// catalogs; list_catalogs must not keep serving the old list from cache.
+func TestCatalogCacheDroppedAfterRotation(t *testing.T) {
+	c, f := trinoCluster(t)
+	mustCall(t, ListCatalogsHandler(c), map[string]any{"cluster_name": "t"})
+	if out := mustCall(t, ListCatalogsHandler(c), map[string]any{"cluster_name": "t"}); !strings.Contains(out, "[cache hit]") {
+		t.Fatal("second call should be a cache hit")
+	}
+	setClusterField(t, c, func(cl *unstructured.Unstructured) {
+		_ = unstructured.SetNestedField(cl.Object, "2026-10-27T10:00:00Z", "status", "lastRotatedAt")
+	})
+	if out := mustCall(t, ListCatalogsHandler(c), map[string]any{"cluster_name": "t"}); strings.Contains(out, "[cache hit]") {
+		t.Error("list_catalogs after a rotation was served from cache")
+	}
+	if n := len(f.Statements()); n != 2 {
+		t.Errorf("want 2 Trino statements, got %d", n)
+	}
+}
+
+// add_catalog through one MCP replica must reach the others: it stamps the
+// Cluster, and a replica that sees the new stamp drops its cache.
+func TestAddCatalogMarksClusterForOtherReplicas(t *testing.T) {
+	c, _ := trinoCluster(t)
+	mustCall(t, ListCatalogsHandler(c), map[string]any{"cluster_name": "t"})
+	mustCall(t, AddCatalogHandler(c), map[string]any{"cluster_name": "t", "catalog_name": "pg", "properties": "connector.name=postgresql"})
+	cl, _ := c.GetCluster(context.Background(), "t", "")
+	if cl.GetAnnotations()[catalogsChangedAnnotation] == "" {
+		t.Fatalf("add_catalog did not stamp %s", catalogsChangedAnnotation)
+	}
+
+	// Another replica's cache: fill it, then let it see a newer stamp.
+	mustCall(t, ListCatalogsHandler(c), map[string]any{"cluster_name": "t"})
+	setClusterField(t, c, func(cl *unstructured.Unstructured) {
+		a := cl.GetAnnotations()
+		a[catalogsChangedAnnotation] = "2099-01-01T00:00:00Z"
+		cl.SetAnnotations(a)
+	})
+	if out := mustCall(t, ListCatalogsHandler(c), map[string]any{"cluster_name": "t"}); strings.Contains(out, "[cache hit]") {
+		t.Error("list_catalogs after another replica changed catalogs was served from cache")
+	}
+}
+
+// A new cluster that reuses a deleted cluster's name (and so its coordinator
+// URL) must not see the old cluster's cached results.
+func TestCatalogCacheDroppedForRecreatedCluster(t *testing.T) {
+	c, _ := trinoCluster(t)
+	mustCall(t, ListCatalogsHandler(c), map[string]any{"cluster_name": "t"})
+	setClusterField(t, c, func(cl *unstructured.Unstructured) { cl.SetUID("new-uid") })
+	if out := mustCall(t, ListCatalogsHandler(c), map[string]any{"cluster_name": "t"}); strings.Contains(out, "[cache hit]") {
+		t.Error("recreated cluster was served the old cluster's cached catalogs")
 	}
 }

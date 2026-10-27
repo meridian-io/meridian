@@ -147,6 +147,11 @@ func ownedBy(cluster *unstructured.Unstructured, clientID, reservationID string)
 	if clientID == "" || reservationID == "" {
 		return false
 	}
+	// A failed cluster or one being deleted doesn't count: the caller gets a
+	// working cluster instead of a dying one.
+	if cluster.GetDeletionTimestamp() != nil || strFromObj(cluster.Object, "status", "phase") == "Failed" {
+		return false
+	}
 	return strFromObj(cluster.Object, "spec", "clientId") == clientID &&
 		strFromObj(cluster.Object, "spec", "reservationId") == reservationID
 }
@@ -156,7 +161,8 @@ func isReservable(cluster *unstructured.Unstructured) bool {
 	status, _ := cluster.Object["status"].(map[string]interface{})
 	phase, _ := status["phase"].(string)
 	ready, _ := status["ready"].(bool)
-	return phase == "Idle" && ready && strFromObj(cluster.Object, "spec", "clientId") == ""
+	return phase == "Idle" && ready && strFromObj(cluster.Object, "spec", "clientId") == "" &&
+		cluster.GetDeletionTimestamp() == nil
 }
 
 // pickOldestIdle returns the reservable cluster with the earliest idleAt.
@@ -202,6 +208,7 @@ func ReleaseClusterTool() mcp.Tool {
 		mcp.WithDescription("Return a reserved Trino cluster to the idle pool. Clears the clientId and reservationId — the cluster transitions back to Idle and becomes available for the next reservation."),
 		mcp.WithString("cluster_name", mcp.Required(), mcp.Description("Name of the Reserved cluster to release.")),
 		mcp.WithString("client_id", mcp.Description("If set, the release only succeeds when the cluster is reserved by this client.")),
+		mcp.WithString("reservation_id", mcp.Description("If set, the release only succeeds when the cluster still holds this reservation, so a newer reservation of the same cluster is never released by mistake.")),
 		mcp.WithString("namespace", mcp.Description("Kubernetes namespace. Defaults to the configured namespace.")),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -216,6 +223,7 @@ func ReleaseClusterHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequ
 
 		clusterName := mcp.ParseString(req, "cluster_name", "")
 		clientID := mcp.ParseString(req, "client_id", "")
+		reservationID := mcp.ParseString(req, "reservation_id", "")
 		ns := mcp.ParseString(req, "namespace", "")
 
 		cluster, err := c.GetCluster(ctx, clusterName, ns)
@@ -228,6 +236,9 @@ func ReleaseClusterHandler(c *k8s.Client) func(context.Context, mcp.CallToolRequ
 		}
 		if clientID != "" && owner != clientID {
 			return nil, fmt.Errorf("cluster %q is reserved by a different client", clusterName)
+		}
+		if reservationID != "" && strFromObj(cluster.Object, "spec", "reservationId") != reservationID {
+			return nil, fmt.Errorf("cluster %q no longer holds reservation %q — it was released or reserved again", clusterName, reservationID)
 		}
 
 		patch, _ := json.Marshal(map[string]interface{}{

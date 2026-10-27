@@ -10,6 +10,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	meridianv1alpha1 "github.com/meridian-io/meridian/operator/api/v1alpha1"
 )
@@ -69,7 +70,7 @@ func TestReserver_Reserve(t *testing.T) {
 	s := newReserverScheme()
 	c := newReserverClient(s, cluster)
 
-	reserver := NewClusterReserver(c)
+	reserver := NewClusterReserver(c, nil)
 	result, err := reserver.Reserve(context.Background(), ReservationRequest{
 		ClientID:      "client-abc",
 		ReservationID: "res-001",
@@ -94,7 +95,7 @@ func TestReserver_PicksOldest(t *testing.T) {
 	s := newReserverScheme()
 	c := newReserverClient(s, older, newer)
 
-	reserver := NewClusterReserver(c)
+	reserver := NewClusterReserver(c, nil)
 	result, err := reserver.Reserve(context.Background(), ReservationRequest{
 		ClientID:      "client-abc",
 		ReservationID: "res-001",
@@ -115,7 +116,7 @@ func TestReserver_NoIdleClusters(t *testing.T) {
 	s := newReserverScheme()
 	c := newReserverClient(s)
 
-	reserver := NewClusterReserver(c)
+	reserver := NewClusterReserver(c, nil)
 
 	// Cancel the context after 100ms — well under the 30s pool wait window.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -140,7 +141,7 @@ func TestReserver_WorkloadMatch(t *testing.T) {
 	s := newReserverScheme()
 	c := newReserverClient(s, analytics, etl)
 
-	reserver := NewClusterReserver(c)
+	reserver := NewClusterReserver(c, nil)
 	result, err := reserver.Reserve(context.Background(), ReservationRequest{
 		ClientID:      "client-abc",
 		ReservationID: "res-001",
@@ -163,7 +164,7 @@ func TestReserver_WorkloadNoMatch(t *testing.T) {
 	s := newReserverScheme()
 	c := newReserverClient(s, etl)
 
-	reserver := NewClusterReserver(c)
+	reserver := NewClusterReserver(c, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -188,7 +189,7 @@ func TestReserver_WorkloadEmpty(t *testing.T) {
 	s := newReserverScheme()
 	fc := newReserverClient(s, c1, c2)
 
-	reserver := NewClusterReserver(fc)
+	reserver := NewClusterReserver(fc, nil)
 	result, err := reserver.Reserve(context.Background(), ReservationRequest{
 		ClientID:      "client-abc",
 		ReservationID: "res-001",
@@ -218,7 +219,7 @@ func TestReserver_Idempotent(t *testing.T) {
 	s := newReserverScheme()
 	c := newReserverClient(s, cluster)
 
-	reserver := NewClusterReserver(c)
+	reserver := NewClusterReserver(c, nil)
 	result, err := reserver.Reserve(context.Background(), ReservationRequest{
 		ClientID:      "client-abc",
 		ReservationID: "res-001",
@@ -240,7 +241,7 @@ func TestReserver_Idempotent(t *testing.T) {
 func TestReserver_RetryBeforeStatusUpdate(t *testing.T) {
 	cluster := idleCluster("pool-01", "meridian", "default", time.Now().Add(-5*time.Minute))
 	c := newReserverClient(newReserverScheme(), cluster)
-	reserver := NewClusterReserver(c)
+	reserver := NewClusterReserver(c, nil)
 	req := ReservationRequest{ClientID: "client-abc", ReservationID: "res-001", Profile: "default", Namespace: "meridian"}
 
 	first, err := reserver.Reserve(context.Background(), req)
@@ -257,5 +258,166 @@ func TestReserver_RetryBeforeStatusUpdate(t *testing.T) {
 	}
 	if again.ReservedAt.IsZero() {
 		t.Error("repeated reserve returned a zero ReservedAt")
+	}
+}
+
+// Two reservations arrive before the cluster controller marks the first
+// cluster Reserved. The second must get a different cluster, not overwrite
+// the first reservation.
+func TestReserver_BackToBackReservationsGetDifferentClusters(t *testing.T) {
+	a := idleCluster("pool-a", "meridian", "default", time.Now().Add(-5*time.Minute))
+	b := idleCluster("pool-b", "meridian", "default", time.Now().Add(-1*time.Minute))
+	c := newReserverClient(newReserverScheme(), a, b)
+	r := NewClusterReserver(c, nil)
+	ctx := context.Background()
+
+	r1, err := r.Reserve(ctx, ReservationRequest{ClientID: "app", ReservationID: "job-1", Profile: "default", Namespace: "meridian"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := r.Reserve(ctx, ReservationRequest{ClientID: "app", ReservationID: "job-2", Profile: "default", Namespace: "meridian"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r1.ClusterName == r2.ClusterName {
+		t.Fatalf("both reservations got %s", r1.ClusterName)
+	}
+	got := &meridianv1alpha1.Cluster{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "meridian", Name: r1.ClusterName}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.ReservationID != "job-1" {
+		t.Errorf("%s has reservationId %q, want job-1", r1.ClusterName, got.Spec.ReservationID)
+	}
+}
+
+var job1 = ReservationRequest{ClientID: "app", ReservationID: "job-1", Profile: "default", Namespace: "meridian"}
+
+// staleLister reads lists from an out-of-date copy (like the informer cache
+// right after a write) and sends everything else to the API server.
+type staleLister struct {
+	client.Client
+	stale client.Client
+}
+
+func (s staleLister) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	return s.stale.List(ctx, list, opts...)
+}
+
+// A retry sent right after a reservation must get the same cluster even when
+// the cache hasn't seen the reservation yet: the check reads the API server.
+func TestReserver_RetryWithStaleCacheGetsSameCluster(t *testing.T) {
+	s := newReserverScheme()
+	at := time.Now().Add(-5 * time.Minute)
+	stale := newReserverClient(s, idleCluster("pool-a", "meridian", "default", at), idleCluster("pool-b", "meridian", "default", at.Add(time.Minute)))
+	api := newReserverClient(s, idleCluster("pool-a", "meridian", "default", at), idleCluster("pool-b", "meridian", "default", at.Add(time.Minute)))
+	// The first request reserved pool-a; the cache hasn't caught up.
+	a := &meridianv1alpha1.Cluster{}
+	_ = api.Get(context.Background(), client.ObjectKey{Namespace: "meridian", Name: "pool-a"}, a)
+	a.Spec.ClientID, a.Spec.ReservationID = "app", "job-1"
+	if err := api.Update(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewClusterReserver(staleLister{Client: api, stale: stale}, api).Reserve(context.Background(), job1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClusterName != "pool-a" {
+		t.Fatalf("retry got %s, want pool-a (the cluster it already holds)", got.ClusterName)
+	}
+	b := &meridianv1alpha1.Cluster{}
+	_ = api.Get(context.Background(), client.ObjectKey{Namespace: "meridian", Name: "pool-b"}, b)
+	if b.Spec.ClientID != "" {
+		t.Error("the retry also claimed pool-b")
+	}
+}
+
+// Two identical requests waiting for capacity: when one gets a cluster, the
+// other returns that cluster instead of claiming a second one.
+func TestReserver_WaitingDuplicateReturnsSameCluster(t *testing.T) {
+	c := newReserverClient(newReserverScheme())
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		cl := idleCluster("pool-a", "meridian", "default", time.Now())
+		cl.ResourceVersion = ""
+		cl.Spec.ClientID, cl.Spec.ReservationID = "app", "job-1"
+		_ = c.Create(context.Background(), cl)
+		other := idleCluster("pool-b", "meridian", "default", time.Now())
+		other.ResourceVersion = ""
+		_ = c.Create(context.Background(), other)
+	}()
+	got, err := NewClusterReserver(c, nil).Reserve(context.Background(), job1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClusterName != "pool-a" {
+		t.Fatalf("got %s, want pool-a (reserved by the duplicate)", got.ClusterName)
+	}
+}
+
+// Two identical requests race for the same cluster: the loser's patch
+// conflicts, and it returns the winner's cluster.
+func TestReserver_ConflictWithDuplicateReturnsItsCluster(t *testing.T) {
+	s := newReserverScheme()
+	first := true
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(idleCluster("pool-a", "meridian", "default", time.Now().Add(-time.Hour)),
+			idleCluster("pool-b", "meridian", "default", time.Now())).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				if first {
+					first = false
+					// The duplicate request claims pool-a just before us.
+					won := &meridianv1alpha1.Cluster{}
+					_ = cl.Get(ctx, client.ObjectKeyFromObject(obj), won)
+					won.Spec.ClientID, won.Spec.ReservationID = "app", "job-1"
+					_ = cl.Update(ctx, won)
+				}
+				return cl.Patch(ctx, obj, patch, opts...)
+			},
+		}).Build()
+
+	got, err := NewClusterReserver(c, nil).Reserve(context.Background(), job1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClusterName != "pool-a" {
+		t.Fatalf("got %s, want pool-a", got.ClusterName)
+	}
+	b := &meridianv1alpha1.Cluster{}
+	_ = c.Get(context.Background(), client.ObjectKey{Namespace: "meridian", Name: "pool-b"}, b)
+	if b.Spec.ClientID != "" {
+		t.Error("a second cluster was claimed for the same reservation")
+	}
+}
+
+// A failed cluster still carrying the reservation is not handed back.
+func TestReserver_FailedReservationGetsNewCluster(t *testing.T) {
+	failed := idleCluster("pool-a", "meridian", "default", time.Now().Add(-time.Hour))
+	failed.Status.Phase = meridianv1alpha1.ClusterPhaseFailed
+	failed.Spec.ClientID, failed.Spec.ReservationID = "app", "job-1"
+	c := newReserverClient(newReserverScheme(), failed, idleCluster("pool-b", "meridian", "default", time.Now()))
+	got, err := NewClusterReserver(c, nil).Reserve(context.Background(), job1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClusterName != "pool-b" {
+		t.Errorf("got %s, want pool-b", got.ClusterName)
+	}
+}
+
+// With equal idle times, the order is by name, the same for every request.
+func TestReserver_PickOrderIsDeterministic(t *testing.T) {
+	at := time.Now().Add(-time.Minute)
+	c := newReserverClient(newReserverScheme(),
+		idleCluster("pool-c", "meridian", "default", at),
+		idleCluster("pool-a", "meridian", "default", at),
+		idleCluster("pool-b", "meridian", "default", at))
+	for i := 0; i < 5; i++ {
+		best, err := NewClusterReserver(c, nil).pickIdleCluster(context.Background(), job1)
+		if err != nil || best.Name != "pool-a" {
+			t.Fatalf("pick %d: %v %v, want pool-a", i, best, err)
+		}
 	}
 }

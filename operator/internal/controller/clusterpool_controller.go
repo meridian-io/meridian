@@ -73,11 +73,21 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	// Categorise clusters by phase.
+	// Categorise clusters by phase. Clusters already being deleted are on
+	// their way out and don't count. An Idle cluster with a clientId has been
+	// claimed and is about to become Reserved: treat it as reserved so it is
+	// never picked for scale-down, rolling upgrade or age recycling.
 	var idle, reserved, pending, failed, degraded []meridianv1alpha1.Cluster
 	for _, c := range clusters.Items {
+		if c.DeletionTimestamp != nil {
+			continue
+		}
 		switch c.Status.Phase {
 		case meridianv1alpha1.ClusterPhaseIdle:
+			if c.Spec.ClientID != "" {
+				reserved = append(reserved, c)
+				continue
+			}
 			idle = append(idle, c)
 		case meridianv1alpha1.ClusterPhaseReserved:
 			reserved = append(reserved, c)
@@ -214,12 +224,19 @@ func (r *ClusterPoolController) Reconcile(ctx context.Context, req ctrl.Request)
 // deleteCluster deletes one of the pool's clusters and counts it by reason.
 // A cluster that is already gone, or already being deleted (the cache can
 // still show it on the next reconcile), is not deleted or counted again.
+// The delete only goes through if the cluster hasn't changed since the pool
+// read it, so a cluster reserved a moment ago is never deleted.
 func (r *ClusterPoolController) deleteCluster(ctx context.Context, pool *meridianv1alpha1.ClusterPool, c *meridianv1alpha1.Cluster, reason string) error {
 	if c.DeletionTimestamp != nil {
 		return nil
 	}
-	if err := r.Delete(ctx, c); err != nil {
-		if apierrors.IsNotFound(err) {
+	var opts []client.DeleteOption
+	if rv := c.ResourceVersion; rv != "" {
+		opts = append(opts, client.Preconditions{ResourceVersion: &rv})
+	}
+	if err := r.Delete(ctx, c, opts...); err != nil {
+		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+			// Gone already, or changed since we read it: look again next time.
 			return nil
 		}
 		return err

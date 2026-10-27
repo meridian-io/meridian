@@ -163,21 +163,21 @@ func TestRunnableCancelsInFlightRequests(t *testing.T) {
 }
 
 func TestNewServerRejectsBadClientCA(t *testing.T) {
-	if _, err := NewServer(":0", nil, "ns", "/nonexistent/ca.crt"); err == nil {
+	if _, err := NewServer(":0", nil, nil, "ns", "/nonexistent/ca.crt"); err == nil {
 		t.Error("missing CA file must be an error, not a silent fallback to no client auth")
 	}
 	bad := filepath.Join(t.TempDir(), "ca.crt")
 	if err := os.WriteFile(bad, []byte("not a certificate"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewServer(":0", nil, "ns", bad); err == nil {
+	if _, err := NewServer(":0", nil, nil, "ns", bad); err == nil {
 		t.Error("CA file without certificates must be an error")
 	}
 }
 
 func TestNewServerRequiresClientCertWithCA(t *testing.T) {
 	ca, _ := writeSelfSignedCert(t)
-	srv, err := NewServer(":0", nil, "ns", ca)
+	srv, err := NewServer(":0", nil, nil, "ns", ca)
 	if err != nil {
 		t.Fatal(err)
 	}
