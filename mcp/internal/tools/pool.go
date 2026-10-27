@@ -13,7 +13,7 @@ import (
 
 func ScalePoolTool() mcp.Tool {
 	return mcp.NewTool("scale_pool",
-		mcp.WithDescription("Set the desired replica count on a ClusterPool. The ClusterPoolController reconciles to this target — creating or deleting clusters as needed. Respects minReplicas/maxReplicas bounds from any attached ClusterPoolAutoscaler."),
+		mcp.WithDescription("Set the desired replica count on a ClusterPool. The ClusterPoolController reconciles to this target — creating or deleting clusters as needed. If a ClusterPoolAutoscaler targets the pool, it can change the count again when utilization is outside its thresholds."),
 		mcp.WithString("pool_name", mcp.Required(), mcp.Description("Name of the ClusterPool to scale.")),
 		mcp.WithNumber("replicas", mcp.Required(), mcp.Description("Desired number of clusters in the pool.")),
 		mcp.WithString("namespace", mcp.Description("Kubernetes namespace. Defaults to the configured namespace.")),

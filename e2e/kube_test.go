@@ -23,6 +23,7 @@ import (
 var (
 	clusterGVR = schema.GroupVersionResource{Group: "meridian.io", Version: "v1alpha1", Resource: "clusters"}
 	poolGVR    = schema.GroupVersionResource{Group: "meridian.io", Version: "v1alpha1", Resource: "clusterpools"}
+	scalerGVR  = schema.GroupVersionResource{Group: "meridian.io", Version: "v1alpha1", Resource: "clusterpoolautoscalers"}
 )
 
 type kube struct {

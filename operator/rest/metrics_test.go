@@ -38,7 +38,7 @@ func TestReservationMetrics(t *testing.T) {
 		}).
 		WithStatusSubresource(&meridianv1alpha1.Cluster{}).
 		Build()
-	h := &ReservationHandler{Reserver: trino.NewClusterReserver(c), Namespace: testNamespace}
+	h := &ReservationHandler{Reserver: trino.NewClusterReserver(c, nil), Namespace: testNamespace}
 
 	for _, tc := range []struct {
 		name   string

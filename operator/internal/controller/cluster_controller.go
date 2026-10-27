@@ -97,7 +97,19 @@ func (r *ClusterController) Reconcile(ctx context.Context, req ctrl.Request) (_ 
 		}
 	}
 
-	// Credential rotation takes priority over lifecycle reconciliation.
+	// Reservations and releases go first, even while a credential rotation is
+	// pending or backing off: rotation only touches catalogs, and holding a
+	// claimed cluster in Idle would leave it looking free to the pool.
+	switch {
+	case cluster.Status.Phase == meridianv1alpha1.ClusterPhaseIdle &&
+		cluster.Spec.ClientID != "" && cluster.Spec.ReservationID != "":
+		return r.reconcileIdle(ctx, cluster)
+	case cluster.Status.Phase == meridianv1alpha1.ClusterPhaseReserved &&
+		cluster.Spec.ClientID == "" && cluster.Spec.ReservationID == "":
+		return r.reconcileReserved(ctx, cluster)
+	}
+
+	// Credential rotation takes priority over the rest of the lifecycle.
 	// The annotation is set by the MCP rotate_credentials tool and cleared
 	// only after a successful rotation (or a non-retriable error).
 	if ann, ok := cluster.Annotations[credentials.AnnotationRotateCredentials]; ok && ann != "" {
@@ -128,20 +140,13 @@ func (r *ClusterController) reconcilePending(ctx context.Context, cluster *merid
 	log := log.FromContext(ctx)
 	log.Info("creating resources for cluster", "cluster", cluster.Name)
 
-	if err := r.ensureClusterConfigMap(ctx, cluster); err != nil {
-		return r.setFailed(ctx, cluster, fmt.Sprintf("failed to create config: %v", err))
-	}
-
-	if err := r.ensureCoordinatorDeployment(ctx, cluster); err != nil {
-		return r.setFailed(ctx, cluster, fmt.Sprintf("failed to create coordinator: %v", err))
-	}
-
-	if err := r.ensureWorkerDeployment(ctx, cluster); err != nil {
-		return r.setFailed(ctx, cluster, fmt.Sprintf("failed to create workers: %v", err))
-	}
-
-	if err := r.ensureService(ctx, cluster); err != nil {
-		return r.setFailed(ctx, cluster, fmt.Sprintf("failed to create service: %v", err))
+	if err := r.ensureResources(ctx, cluster); err != nil {
+		if isTransient(err) {
+			// A timeout or throttling from the API server: try again rather
+			// than failing a cluster that is fine.
+			return ctrl.Result{}, err
+		}
+		return r.setFailed(ctx, cluster, err.Error())
 	}
 
 	cluster.Status.Phase = meridianv1alpha1.ClusterPhasePending
@@ -151,6 +156,32 @@ func (r *ClusterController) reconcilePending(ctx context.Context, cluster *merid
 
 	// Requeue to check health
 	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+}
+
+// ensureResources creates whichever of the cluster's ConfigMap, Deployments
+// and Service are missing. Existing ones are left alone.
+func (r *ClusterController) ensureResources(ctx context.Context, cluster *meridianv1alpha1.Cluster) error {
+	if err := r.ensureClusterConfigMap(ctx, cluster); err != nil {
+		return fmt.Errorf("failed to create config: %w", err)
+	}
+	if err := r.ensureCoordinatorDeployment(ctx, cluster); err != nil {
+		return fmt.Errorf("failed to create coordinator: %w", err)
+	}
+	if err := r.ensureWorkerDeployment(ctx, cluster); err != nil {
+		return fmt.Errorf("failed to create workers: %w", err)
+	}
+	if err := r.ensureService(ctx, cluster); err != nil {
+		return fmt.Errorf("failed to create service: %w", err)
+	}
+	return nil
+}
+
+// isTransient reports API errors that are worth retrying.
+func isTransient(err error) bool {
+	return apierrors.IsServerTimeout(err) || apierrors.IsTimeout(err) ||
+		apierrors.IsTooManyRequests(err) || apierrors.IsServiceUnavailable(err) ||
+		apierrors.IsInternalError(err) || apierrors.IsConflict(err) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // reconcileHealthCheck verifies the cluster is healthy before marking it Idle.
@@ -328,15 +359,22 @@ func trinoReadinessProbe() *corev1.Probe {
 	}
 }
 
-// ensureCoordinatorRunning recovers from coordinator pod eviction.
+// ensureCoordinatorRunning recovers a reserved cluster whose coordinator is
+// down (evicted, OOM-killed, failing readiness). The cluster stays Reserved:
+// it belongs to its client until release or the reservation TTL, so it is
+// never sent back through Pending, where the pending timeout could fail it
+// and the pool would delete it.
 func (r *ClusterController) ensureCoordinatorRunning(ctx context.Context, cluster *meridianv1alpha1.Cluster) (ctrl.Result, error) {
 	healthy, err := r.isClusterHealthy(ctx, cluster)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if !healthy {
-		log.FromContext(ctx).Info("coordinator evicted, recovering", "cluster", cluster.Name)
-		return r.reconcilePending(ctx, cluster)
+		log.FromContext(ctx).Info("coordinator of reserved cluster is down, recreating missing resources", "cluster", cluster.Name)
+		if err := r.ensureResources(ctx, cluster); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
 }

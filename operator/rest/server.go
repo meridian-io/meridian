@@ -133,10 +133,15 @@ func (h *ReservationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Namespace:     h.Namespace,
 	})
 	if err != nil {
-		if errors.Is(err, trino.ErrNoIdleClusters) {
+		switch {
+		case errors.Is(err, trino.ErrNoIdleClusters):
 			outcome = metrics.ReserveNoCapacity
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		case r.Context().Err() != nil:
+			// The client went away while waiting; nobody reads the answer.
+		default:
+			http.Error(w, "reservation failed: "+err.Error(), http.StatusInternalServerError)
 		}
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 
@@ -155,7 +160,10 @@ func (h *ReservationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ReleaseHandler releases a cluster reservation.
 // The requesting client must own the reservation (clientID from cert must match).
 type ReleaseHandler struct {
-	Client    client.Client
+	Client client.Client
+	// Reader reads straight from the API server (mgr.GetAPIReader()), so the
+	// ownership check never runs on a stale copy. Nil falls back to Client.
+	Reader    client.Reader
 	Namespace string
 }
 
@@ -172,31 +180,57 @@ func (h *ReleaseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	reader := h.Reader
+	if reader == nil {
+		reader = h.Client
+	}
 	list := &meridianv1alpha1.ClusterList{}
-	if err := h.Client.List(r.Context(), list,
-		client.InNamespace(h.Namespace),
-		client.MatchingFields{"spec.reservationId": reservationID},
-	); err != nil {
+	if err := reader.List(r.Context(), list, client.InNamespace(h.Namespace)); err != nil {
 		http.Error(w, "failed to list clusters", http.StatusInternalServerError)
 		return
 	}
-	if len(list.Items) == 0 {
+
+	// A reservation is identified by (clientId, reservationId): two clients
+	// may use the same reservationId.
+	var mine []*meridianv1alpha1.Cluster
+	otherOwner := false
+	for i := range list.Items {
+		c := &list.Items[i]
+		if c.Spec.ReservationID != reservationID {
+			continue
+		}
+		if c.Spec.ClientID == clientID {
+			mine = append(mine, c)
+		} else {
+			otherOwner = true
+		}
+	}
+	if len(mine) == 0 {
+		if otherOwner {
+			http.Error(w, "reservation owned by a different client", http.StatusForbidden)
+			return
+		}
 		http.Error(w, "reservation not found", http.StatusNotFound)
 		return
 	}
 
-	cluster := &list.Items[0]
-	if cluster.Spec.ClientID != clientID {
-		http.Error(w, "reservation owned by a different client", http.StatusForbidden)
-		return
-	}
-
-	patch := client.MergeFrom(cluster.DeepCopy())
-	cluster.Spec.ClientID = ""
-	cluster.Spec.ReservationID = ""
-	if err := h.Client.Patch(r.Context(), cluster, patch); err != nil {
-		http.Error(w, "failed to release reservation", http.StatusInternalServerError)
-		return
+	for _, cluster := range mine {
+		// The optimistic lock makes the patch fail if the cluster changed
+		// since we read it, e.g. it was released and reserved by someone else.
+		patch := client.MergeFromWithOptions(cluster.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		cluster.Spec.ClientID = ""
+		cluster.Spec.ReservationID = ""
+		if err := h.Client.Patch(r.Context(), cluster, patch); err != nil {
+			if apierrors.IsConflict(err) {
+				http.Error(w, "cluster changed while releasing, retry", http.StatusConflict)
+				return
+			}
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			http.Error(w, "failed to release reservation", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -357,8 +391,12 @@ func extractClientID(tlsState *tls.ConnectionState) string {
 // present a certificate signed by that CA (mTLS); a CA file that can't be read
 // or holds no certificates is an error, so the API never silently falls back
 // to accepting any client.
-func NewServer(addr string, k8sClient client.Client, namespace string, caFile string) (*http.Server, error) {
-	reserver := trino.NewClusterReserver(k8sClient)
+//
+// apiReader reads straight from the API server (mgr.GetAPIReader()); the
+// reservation and release paths use it for their checks. Nil falls back to
+// k8sClient.
+func NewServer(addr string, k8sClient client.Client, apiReader client.Reader, namespace string, caFile string) (*http.Server, error) {
+	reserver := trino.NewClusterReserver(k8sClient, apiReader)
 
 	mux := http.NewServeMux()
 
@@ -367,7 +405,7 @@ func NewServer(addr string, k8sClient client.Client, namespace string, caFile st
 		Reserver: reserver, Namespace: namespace,
 	})
 	mux.Handle("DELETE /api/v1/clusters/reservations/{reservationId}", &ReleaseHandler{
-		Client: k8sClient, Namespace: namespace,
+		Client: k8sClient, Reader: apiReader, Namespace: namespace,
 	})
 
 	// Cluster reads

@@ -2,7 +2,7 @@
 
 **The open-source Trino control plane and MCP server for Kubernetes.**
 
-**[getmeridian.dev](https://getmeridian.dev)** · **[Tutorial](https://getmeridian.dev/tutorial.html)** · **Latest release: [v1.5.0](https://github.com/meridian-io/meridian/releases/tag/v1.5.0)**
+**[getmeridian.dev](https://getmeridian.dev)** · **[Tutorial](https://getmeridian.dev/tutorial.html)** · **Latest release: [v1.5.1](https://github.com/meridian-io/meridian/releases/tag/v1.5.1)**
 
 Trino clusters take 30–90 seconds to provision. Meridian eliminates that wait: a hot standby pool keeps pre-provisioned clusters idle and ready, so a reservation completes in zero seconds. No cold starts for CI/CD jobs, batch workloads, or multi-tenant platforms.
 
@@ -18,7 +18,7 @@ Meridian has two parts:
 Installs the operator, its CRDs, and RBAC. Needs Kubernetes 1.26+ and Helm 3.
 
 ```bash
-helm install meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.5.0 \
+helm install meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.5.1 \
   --namespace meridian --create-namespace
 
 # or from a checkout of this repo
@@ -68,7 +68,7 @@ To run the MCP server in the cluster:
 
 ```bash
 kubectl -n meridian create secret generic meridian-mcp-token --from-literal=token=$(openssl rand -hex 32)
-helm upgrade meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.5.0 -n meridian \
+helm upgrade meridian oci://ghcr.io/meridian-io/charts/meridian --version 1.5.1 -n meridian \
   --reuse-values --set mcp.enabled=true --set mcp.auth.existingSecret=meridian-mcp-token
 ```
 
@@ -123,13 +123,13 @@ The `meridian` binary is an MCP server for Trino clusters managed by Meridian. I
 
 **Binary** (macOS arm64 shown; Linux and Windows builds are on the [releases page](https://github.com/meridian-io/meridian/releases)):
 ```bash
-curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.5.0/trino-mcp-server_1.5.0_darwin_arm64.tar.gz
+curl -Lo meridian.tar.gz https://github.com/meridian-io/meridian/releases/download/v1.5.1/trino-mcp-server_1.5.1_darwin_arm64.tar.gz
 tar xzf meridian.tar.gz && sudo mv meridian /usr/local/bin/
 ```
 
 **Docker:**
 ```bash
-docker pull ghcr.io/meridian-io/trino-mcp-server:v1.5.0
+docker pull ghcr.io/meridian-io/trino-mcp-server:v1.5.1
 ```
 
 ### Run
@@ -197,7 +197,7 @@ Other flags: `--metrics-addr` (Prometheus metrics, default `:9090` in http mode,
 | `list_clusters` | List all clusters with phase, health, coordinator URL | — |
 | `get_cluster` | Get full details of a specific cluster | — |
 | `reserve_cluster` | Claim an idle cluster by name or workload. Idempotent and safe under concurrency: two clients never get the same cluster | — |
-| `release_cluster` | Return a cluster to the idle pool. Pass `client_id` to release only your own reservation | — |
+| `release_cluster` | Return a cluster to the idle pool. Pass `client_id` to release only your own reservation, and `reservation_id` to release only that reservation | — |
 | `list_catalogs` | List all catalogs registered in a cluster | 5 min |
 | `list_schemas` | List schemas in a catalog | 5 min |
 | `list_tables` | List tables in a catalog schema | 5 min |
@@ -265,7 +265,7 @@ The operator runs three controllers in one binary:
 |---|---|
 | `ClusterController` | Lifecycle per cluster. Creates the coordinator and worker Deployments and the coordinator Service, health-gates the move to `Idle`, marks a cluster `Degraded` if its coordinator dies while idle, and recovers evicted coordinators. |
 | `ClusterPoolController` | Keeps the warm pool at `spec.replicas`. Creates up to 3 clusters per cycle and deletes the oldest idle cluster when over-provisioned (one per cycle). Replaces `Failed` and `Degraded` clusters, releases reservations older than `reservationTtl`, rolls clusters onto a new image, and recycles clusters older than `maxClusterAge`. |
-| `ClusterPoolAutoscalerController` | Adjusts `ClusterPool.spec.replicas` from utilization (`reserved / total`). Scales up at ≥ threshold (default 70%) and down below threshold × 0.75 (hysteresis). |
+| `ClusterPoolAutoscalerController` | Adjusts `ClusterPool.spec.replicas` from utilization (`reserved / spec.replicas`). Scales up at ≥ threshold (default 70%) and down below threshold × 0.75 (hysteresis), at most once every 5 minutes after the last change. |
 
 ### Cluster Lifecycle
 
@@ -368,7 +368,7 @@ make build     # → bin/meridian-operator
   --rest-addr :8443 --tls-cert cert.pem --tls-key key.pem --tls-ca ca.pem
 ```
 
-`--tls-ca` turns on client-certificate checks. Without it the REST API accepts any client and logs a warning. If the CA file can't be read, the operator refuses to start.
+`--tls-ca` turns on client-certificate checks, which the API needs: the client's identity comes from its certificate. Without it the API can't identify clients, answers reservation requests with 401, and logs a warning. If the CA file can't be read, the operator refuses to start.
 
 ### Reserve a Cluster (REST API)
 
@@ -383,6 +383,10 @@ curl -X POST https://meridian:8443/api/v1/clusters/reservations \
 ```json
 {"clusterName": "pool-abc123", "coordinatorUrl": "http://pool-abc123-coordinator.meridian.svc.cluster.local:8080", "reservedAt": "2026-03-01T10:00:00Z"}
 ```
+
+A reservation is identified by the client and its `reservationId`, so sending the same request again returns the same cluster. If no cluster is idle, the request waits up to 30 seconds and then returns `503`. Other failures return `500`.
+
+Release it with `DELETE /api/v1/clusters/reservations/job-123`: `204` when released, `403` if another client holds that ID, `404` if there is no such reservation, and `409` if the cluster changed during the release (send it again).
 
 ---
 

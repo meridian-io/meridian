@@ -225,13 +225,13 @@ func main() {
 	// Run the mTLS reservation REST API under the manager so it shuts down
 	// gracefully with the operator.
 	if restAddr != "" && tlsCert != "" && tlsKey != "" {
-		srv, err := rest.NewServer(restAddr, mgr.GetClient(), namespace, tlsCA)
+		srv, err := rest.NewServer(restAddr, mgr.GetClient(), mgr.GetAPIReader(), namespace, tlsCA)
 		if err != nil {
 			log.Error(err, "failed to configure REST API")
 			os.Exit(1)
 		}
 		if tlsCA == "" {
-			log.Info("WARNING: REST API has no --tls-ca, so it accepts any client without a certificate. Set --tls-ca to require mTLS.")
+			log.Info("WARNING: REST API has no --tls-ca, so it can't verify client certificates and every reservation request gets 401. Set --tls-ca to enable mTLS.")
 		}
 		if err := mgr.Add(&rest.Runnable{Server: srv, CertFile: tlsCert, KeyFile: tlsKey}); err != nil {
 			log.Error(err, "failed to register REST API")

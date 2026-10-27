@@ -478,3 +478,23 @@ func TestScalePoolReturnsCounts(t *testing.T) {
 		t.Errorf("unexpected scale_pool output: %s", out)
 	}
 }
+
+// An agent holding an old reservation_id must not release a newer
+// reservation of the same cluster.
+func TestReleaseChecksReservationID(t *testing.T) {
+	c, _, _ := newTestClient(t, poolObj("p", 1, ""),
+		clusterObj(clusterFixture{name: "a", phase: "Reserved", ready: true, clientID: "agent", reservationID: "r2"}))
+	wantErr(t, ReleaseClusterHandler(c), map[string]any{"cluster_name": "a", "client_id": "agent", "reservation_id": "r1"}, "no longer holds")
+	got, _ := c.GetCluster(context.Background(), "a", "")
+	if strFromObj(got.Object, "spec", "reservationId") != "r2" {
+		t.Fatal("the newer reservation was released")
+	}
+	mustCall(t, ReleaseClusterHandler(c), map[string]any{"cluster_name": "a", "client_id": "agent", "reservation_id": "r2"})
+}
+
+// A repeated reserve call is not answered with a failed cluster.
+func TestReserveIgnoresFailedClusterWithSameReservation(t *testing.T) {
+	c, _, _ := newTestClient(t, poolObj("p", 1, ""),
+		clusterObj(clusterFixture{name: "a", phase: "Failed", clientID: "ci", reservationID: "r1"}))
+	wantErr(t, ReserveClusterHandler(c), map[string]any{"cluster_name": "a", "client_id": "ci", "reservation_id": "r1"}, "not available")
+}

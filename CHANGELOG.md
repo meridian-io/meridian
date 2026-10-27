@@ -7,6 +7,48 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [v1.5.1] — 2026-10-26
+
+Fixes reservation and pool bugs that could take a cluster away from the client using it, and the pool autoscaler, which grew and shrank a busy pool every 30 to 60 seconds. Upgrading is recommended for everyone using reservations.
+
+### Fixed
+
+**A reserved cluster could be deleted or given to someone else**
+- **A coordinator restart deleted the reserved cluster.** If the coordinator of a reserved cluster restarted or failed its readiness check (out of memory, eviction, heavy load), the cluster went back to Pending. A cluster more than 15 minutes old was then marked Failed and deleted while its client was still using it. Younger clusters had their reservation timer reset. A reserved cluster now stays Reserved, missing Deployments are recreated, and the reservation keeps its timer.
+- **The pool could delete a cluster just after it was reserved.** For a moment after a reservation, a cluster is still marked Idle. Scale-down, rolling image upgrades and age recycling could pick it then. Scale-down was the most likely, because it removes the longest-idle cluster, which is also the one handed out first. The pool now treats claimed clusters as reserved, and only deletes a cluster that hasn't changed since it looked at it.
+- **Two REST reservations could get the same cluster.** A request arriving less than about a second after another could take the cluster the first had just been given. The first reservation was overwritten, and both jobs were told the cluster was theirs. The REST API now skips clusters that already have an owner, as the MCP tool already did.
+- **A REST release could cancel someone else's newer reservation.** Releasing an expired reservation could clear the cluster's next reservation if the operator's cached copy was out of date. Releases now fail with `409` if the cluster changed, and the client can send them again.
+- **Reservations and releases waited for credential rotation.** While a rotation on a cluster was retrying, which can last up to 20 minutes between attempts, a reservation was not recorded: the cluster still looked free, its timer didn't start, and a release didn't take effect. They are now recorded right away.
+
+**Duplicate and retried reservations**
+- **The same reservation could get two clusters.** A retry sent right after the first request, or two copies of a request waiting for capacity, could each claim a cluster. Meridian now checks for the reservation against the API server, not its cache, on every attempt, so duplicates get the same cluster.
+- **Two clients using the same `reservationId` blocked each other's release.** Release now matches the client and the ID together, as reserving already did, so each client releases its own cluster.
+- **A repeated request could return a failed cluster** or one being deleted, over REST or MCP. It now gets a working cluster.
+
+**Pool and cluster lifecycle**
+- **A cluster that was being deleted still counted toward the pool**, so the pool deleted a healthy cluster to make up for it.
+- **A brief API server timeout while creating a cluster marked it Failed**, and the pool deleted and recreated it. Such errors are now retried.
+
+**Autoscaler**
+- **It flapped when a pool was busy.** Once most clusters were reserved, it jumped to `maxReplicas`, then scaled back down as soon as the new clusters started, deleting them, and repeated. In testing, a pool of 2 to 4 clusters started 19 clusters and deleted 21 in 13 minutes, and apps could rarely get a cluster.
+  - It no longer re-runs when it updates its own status, so each check makes at most one change.
+  - Utilization is measured against the pool's target size (`spec.replicas`), not the clusters that already exist.
+  - It waits 5 minutes after any change before scaling down.
+  - A fully reserved pool of 2 now grows to 3 and stays there.
+- **It could shrink a busy pool.** If a pool was above `maxReplicas`, for example after `scale_pool`, a busy pool was cut to `maxReplicas` at once. It now leaves the pool alone. `minReplicas` above `maxReplicas` is treated as `maxReplicas = minReplicas` instead of flipping between them.
+- **One scale-up sometimes added an extra cluster** when usage landed exactly on the threshold.
+- **A `utilizationThreshold` outside 0 to 1**, such as `"70"`, kept the pool at its minimum or maximum. Such values now fall back to the default 0.70, and `"70%"` is read as 0.70.
+
+**REST API and MCP**
+- A failed reservation request returned `503` for every error. `503` now means no cluster became idle within 30 seconds, and other errors return `500`.
+- The startup warning without `--tls-ca` said the API accepts any client. In fact every reservation request gets `401`, and the warning now says so.
+- `release_cluster` takes an optional `reservation_id`, so an agent can't release a newer reservation of the same cluster by mistake. The `scale_pool` description no longer claims it respects the autoscaler's limits.
+
+### Added
+- End-to-end scenarios for both: a reserved cluster keeps its owner through a coordinator crash, and a busy pool with an autoscaler grows once and stays steady.
+
+---
+
 ## [v1.5.0] — 2026-10-26
 
 Prometheus metrics and a Grafana dashboard, sample data on new clusters, and end-to-end tests on every change. The deprecated `/sse` endpoint is removed.

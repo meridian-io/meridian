@@ -45,10 +45,18 @@ type ReservationResult struct {
 // ClusterReserver handles idempotent cluster reservation from the hot standby pool.
 type ClusterReserver struct {
 	client client.Client
+	// reader reads straight from the API server. Idempotency checks use it so
+	// a retry sent right after a reservation sees it even if the cache hasn't.
+	reader client.Reader
 }
 
-func NewClusterReserver(c client.Client) *ClusterReserver {
-	return &ClusterReserver{client: c}
+// NewClusterReserver returns a reserver. reader should be an uncached reader
+// (mgr.GetAPIReader()); nil falls back to c.
+func NewClusterReserver(c client.Client, reader client.Reader) *ClusterReserver {
+	if reader == nil {
+		reader = c
+	}
+	return &ClusterReserver{client: c, reader: reader}
 }
 
 // Reserve finds a healthy idle cluster and reserves it for the given client.
@@ -58,28 +66,15 @@ func NewClusterReserver(c client.Client) *ClusterReserver {
 // for up to poolWaitTimeout (30s) so the caller does not have to implement its
 // own retry loop — the autoscaler will spin up new capacity in parallel.
 func (r *ClusterReserver) Reserve(ctx context.Context, req ReservationRequest) (*ReservationResult, error) {
-	// Check for an existing reservation first (idempotency).
-	existing, err := r.findExistingReservation(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	if existing != nil {
-		// status.reservedAt is set by the cluster controller shortly after
-		// the reservation; a retry can arrive before that.
-		reservedAt := time.Now()
-		if existing.Status.ReservedAt != nil {
-			reservedAt = existing.Status.ReservedAt.Time
-		}
-		return &ReservationResult{
-			ClusterName:    existing.Name,
-			CoordinatorURL: existing.Status.CoordinatorURL,
-			ReservedAt:     reservedAt,
-		}, nil
-	}
-
 	// Poll until an idle cluster is available or the wait window expires.
+	// Every round first checks for an existing reservation (idempotency): a
+	// duplicate request that was waiting alongside this one may have got a
+	// cluster in the meantime.
 	deadline := time.Now().Add(poolWaitTimeout)
 	for {
+		if existing, err := r.existingResult(ctx, req); err != nil || existing != nil {
+			return existing, err
+		}
 		result, err := r.tryReserve(ctx, req)
 		if err == nil {
 			return result, nil
@@ -115,8 +110,17 @@ func (r *ClusterReserver) tryReserve(ctx context.Context, req ReservationRequest
 		result, err := r.patchIfCurrent(ctx, cluster, req)
 		if err != nil {
 			if apierrors.IsConflict(err) {
-				// Another request claimed this cluster — retry with the next one.
-				time.Sleep(retryBackoff)
+				// Someone else changed this cluster first. If it was a
+				// duplicate of this request, return its cluster; otherwise
+				// retry with the next one.
+				if existing, err := r.existingResult(ctx, req); err != nil || existing != nil {
+					return existing, err
+				}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(retryBackoff):
+				}
 				continue
 			}
 			return nil, err
@@ -126,20 +130,41 @@ func (r *ClusterReserver) tryReserve(ctx context.Context, req ReservationRequest
 	return nil, fmt.Errorf("reservation failed after %d attempts: all idle clusters were claimed concurrently", maxRetries)
 }
 
-// findExistingReservation returns a cluster already reserved for this (clientId, reservationId).
-func (r *ClusterReserver) findExistingReservation(ctx context.Context, req ReservationRequest) (*meridianv1alpha1.Cluster, error) {
-	list := &meridianv1alpha1.ClusterList{}
-	if err := r.client.List(ctx, list,
-		client.InNamespace(req.Namespace),
-		client.MatchingFields{
-			"spec.clientId":      req.ClientID,
-			"spec.reservationId": req.ReservationID,
-		},
-	); err != nil {
+// existingResult returns the result for a live cluster already reserved for
+// this (clientId, reservationId), or nil if there is none.
+func (r *ClusterReserver) existingResult(ctx context.Context, req ReservationRequest) (*ReservationResult, error) {
+	existing, err := r.findExistingReservation(ctx, req)
+	if err != nil || existing == nil {
 		return nil, err
 	}
-	if len(list.Items) > 0 {
-		return &list.Items[0], nil
+	// status.reservedAt is set by the cluster controller shortly after
+	// the reservation; a retry can arrive before that.
+	reservedAt := time.Now()
+	if existing.Status.ReservedAt != nil {
+		reservedAt = existing.Status.ReservedAt.Time
+	}
+	return &ReservationResult{
+		ClusterName:    existing.Name,
+		CoordinatorURL: existing.Status.CoordinatorURL,
+		ReservedAt:     reservedAt,
+	}, nil
+}
+
+// findExistingReservation returns a live cluster already reserved for this
+// (clientId, reservationId). It reads from the API server, not the cache, so
+// it sees a reservation made a moment ago. Clusters that are failed or being
+// deleted don't count: the client gets a working cluster instead.
+func (r *ClusterReserver) findExistingReservation(ctx context.Context, req ReservationRequest) (*meridianv1alpha1.Cluster, error) {
+	list := &meridianv1alpha1.ClusterList{}
+	if err := r.reader.List(ctx, list, client.InNamespace(req.Namespace)); err != nil {
+		return nil, err
+	}
+	for i := range list.Items {
+		c := &list.Items[i]
+		if c.Spec.ClientID == req.ClientID && c.Spec.ReservationID == req.ReservationID &&
+			c.DeletionTimestamp == nil && c.Status.Phase != meridianv1alpha1.ClusterPhaseFailed {
+			return c, nil
+		}
 	}
 	return nil, nil
 }
@@ -162,19 +187,33 @@ func (r *ClusterReserver) pickIdleCluster(ctx context.Context, req ReservationRe
 	var best *meridianv1alpha1.Cluster
 	for i := range list.Items {
 		c := &list.Items[i]
-		if c.Status.Phase == meridianv1alpha1.ClusterPhaseIdle && c.Status.Ready {
-			if best == nil {
-				best = c
-				continue
-			}
-			// Prefer the cluster that became idle earliest (longest-waiting standby cluster).
-			if c.Status.IdleAt != nil && best.Status.IdleAt != nil &&
-				c.Status.IdleAt.Before(best.Status.IdleAt) {
-				best = c
-			}
+		// A cluster with a clientId is already claimed: the cluster controller
+		// just hasn't moved it to Reserved yet.
+		if c.Status.Phase != meridianv1alpha1.ClusterPhaseIdle || !c.Status.Ready ||
+			c.Spec.ClientID != "" || c.DeletionTimestamp != nil {
+			continue
+		}
+		if best == nil || idleBefore(c, best) {
+			best = c
 		}
 	}
 	return best, nil
+}
+
+// idleBefore orders candidates: the cluster that became idle earliest first
+// (longest-waiting standby), then by name. The order is the same for every
+// request, so duplicate requests racing each other go for the same cluster
+// and the loser sees the winner's reservation.
+func idleBefore(a, b *meridianv1alpha1.Cluster) bool {
+	switch {
+	case a.Status.IdleAt != nil && b.Status.IdleAt != nil && !a.Status.IdleAt.Equal(b.Status.IdleAt):
+		return a.Status.IdleAt.Before(b.Status.IdleAt)
+	case a.Status.IdleAt != nil && b.Status.IdleAt == nil:
+		return true
+	case a.Status.IdleAt == nil && b.Status.IdleAt != nil:
+		return false
+	}
+	return a.Name < b.Name
 }
 
 // patchIfCurrent atomically patches the cluster with clientId + reservationId.
