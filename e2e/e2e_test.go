@@ -54,6 +54,8 @@ func TestE2E(t *testing.T) {
 	t.Run("credential rotation", s.credentialRotation)
 	t.Run("mcp rolling restart drops no calls", s.mcpRollingRestart)
 	t.Run("metrics are exported", s.metricsExported)
+	// Last: restarting the operator resets the counters checked above.
+	t.Run("operator restart hands over leadership quickly", s.operatorHandover)
 }
 
 type suite struct {
@@ -637,6 +639,56 @@ func (s *suite) credentialRotation(t *testing.T) {
 
 // Scenario 7: restart the MCP Deployment under steady load through the
 // Service. With the shutdown drain, no call may fail.
+// leaderLease is the operator's leader-election Lease.
+const leaderLease = "meridian-operator-leader.meridian.io"
+
+// Scenario 9b: restart the operator. The stopping leader gives up its lease,
+// so the new pod takes over within seconds instead of waiting ~15s for the
+// lease to expire, with no controller running in between.
+func (s *suite) operatorHandover(t *testing.T) {
+	k := s.k
+	s.ready(t)
+	name := k.deploymentByComponent(t, "operator")
+	holder := func() string {
+		l, err := k.core.CoordinationV1().Leases(k.ns).Get(ctx(), leaderLease, metav1.GetOptions{})
+		if err != nil || l.Spec.HolderIdentity == nil {
+			return ""
+		}
+		return strings.SplitN(*l.Spec.HolderIdentity, "_", 2)[0] // "<pod>_<uid>"
+	}
+	old := holder()
+	if old == "" {
+		t.Fatal("no operator holds the leader lease")
+	}
+
+	run(t, "kubectl", "-n", k.ns, "rollout", "restart", "deployment/"+name)
+	// Poll tightly: the point is to time the handover.
+	waitFor := func(timeout time.Duration, what string, cond func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(timeout); !cond(); time.Sleep(200 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out after %v waiting for %s", timeout, what)
+			}
+		}
+	}
+	waitFor(4*time.Minute, "old leader "+old+" to start stopping", func() bool {
+		p, err := k.core.CoreV1().Pods(k.ns).Get(ctx(), old, metav1.GetOptions{})
+		return apierrors.IsNotFound(err) || (err == nil && p.DeletionTimestamp != nil)
+	})
+	stopping := time.Now()
+	waitFor(time.Minute, "a new pod to take the lease", func() bool {
+		h := holder()
+		return h != "" && h != old
+	})
+	took := time.Since(stopping)
+	t.Logf("new leader took over %.1fs after the old one began stopping", took.Seconds())
+	if took > 8*time.Second {
+		t.Errorf("handover took %v, want under 8s", took)
+	}
+	run(t, "kubectl", "-n", k.ns, "rollout", "status", "deployment/"+name, "--timeout", "3m")
+	s.ready(t)
+}
+
 func (s *suite) mcpRollingRestart(t *testing.T) {
 	k := s.k
 	s.ready(t)

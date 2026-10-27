@@ -39,13 +39,20 @@ Fixes reservation and pool bugs that could take a cluster away from the client u
 - **One scale-up sometimes added an extra cluster** when usage landed exactly on the threshold.
 - **A `utilizationThreshold` outside 0 to 1**, such as `"70"`, kept the pool at its minimum or maximum. Such values now fall back to the default 0.70, and `"70%"` is read as 0.70.
 
+**Operator restarts and unreachable clusters**
+- **After an operator restart or upgrade, nothing was managed for about 15 seconds.** The stopping operator kept its leader lease until it expired, so the new one had to wait. It now hands the lease over as it stops: in testing, the new operator took over in 1.6 seconds instead of 16.
+- **MCP calls to a cluster that had just gone away could hang for up to 30 seconds.** Connections to a coordinator now give up after 5 seconds, and queries on a cluster that is being deleted fail at once with a clear message.
+
+**Stale catalog lists in MCP**
+- **After a credential rotation, `list_catalogs` could show the old catalogs for up to 5 minutes.** The MCP server cached the list and cleared it only for `add_catalog` and `remove_catalog`, and only on the replica that ran them. Each MCP replica now notices from the Cluster resource when its catalogs change, through a rotation, through `add_catalog` or `remove_catalog` on any replica (which now mark the cluster), or because the cluster was recreated under the same name, and drops its cached results.
+
 **REST API and MCP**
 - A failed reservation request returned `503` for every error. `503` now means no cluster became idle within 30 seconds, and other errors return `500`.
 - The startup warning without `--tls-ca` said the API accepts any client. In fact every reservation request gets `401`, and the warning now says so.
 - `release_cluster` takes an optional `reservation_id`, so an agent can't release a newer reservation of the same cluster by mistake. The `scale_pool` description no longer claims it respects the autoscaler's limits.
 
 ### Added
-- End-to-end scenarios for both: a reserved cluster keeps its owner through a coordinator crash, and a busy pool with an autoscaler grows once and stays steady.
+- End-to-end scenarios: a reserved cluster keeps its owner through a coordinator crash, a busy pool with an autoscaler grows once and stays steady, and a restarted operator hands over leadership within seconds.
 
 ---
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,12 +23,26 @@ const (
 	maxResponseBytes  = 64 << 20 // one Trino page; guards against a runaway response
 )
 
+// trinoDialTimeout bounds opening a connection to a coordinator. Inside a
+// cluster that takes milliseconds; a coordinator pod that was just killed can
+// leave its address silent, and without a bound each request would wait for
+// the default 30s before failing.
+var trinoDialTimeout = 5 * time.Second
+
+// trinoDial opens connections; tests replace it.
+var trinoDial = (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext
+
 // trinoHTTP is shared by every Trino call so connections are reused.
 var trinoHTTP = &http.Client{
 	Timeout: 30 * time.Second,
 	Transport: func() http.RoundTripper {
 		t := http.DefaultTransport.(*http.Transport).Clone()
 		t.MaxIdleConnsPerHost = 16
+		t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			ctx, cancel := context.WithTimeout(ctx, trinoDialTimeout)
+			defer cancel()
+			return trinoDial(ctx, network, addr)
+		}
 		return t
 	}(),
 }

@@ -146,6 +146,11 @@ func main() {
 		LeaderElection:          true,
 		LeaderElectionID:        "meridian-operator-leader.meridian.io",
 		LeaderElectionNamespace: namespace,
+		// Give up the lease as soon as the operator stops, so a new replica
+		// takes over at once during upgrades instead of waiting for the lease
+		// to expire (about 15s). Safe because main returns right after
+		// mgr.Start, with nothing else running.
+		LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		log.Error(err, "failed to create manager")

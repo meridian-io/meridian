@@ -225,7 +225,7 @@ Results are cached in memory to avoid repeated round-trips to Trino:
 - **Metadata tools** (`list_catalogs`, `list_schemas`, `list_tables`, `get_table_schema`, `explain_query`) cache for 5 minutes.
 - **`execute_query`** is not cached by default, so data changes are visible immediately. Pass `ttl=N` to cache static or reference data for N seconds.
 - **Cache hits** are marked `[cache hit]`.
-- **`add_catalog` / `remove_catalog`** clear that cluster's cache, so `list_catalogs` reflects the change right away.
+- **Catalog changes clear the cache.** After `add_catalog`, `remove_catalog` or a credential rotation, every MCP replica drops that cluster's cached results, so `list_catalogs` reflects the change right away.
 - **Identical concurrent queries** run once (singleflight). The second caller gets the first caller's result.
 - **Cache key:** the cluster, `max_rows`, and the SQL. A result cut off at `max_rows` is never served to a request that asked for more rows.
 - **Size:** at most `--cache-max-entries` results (default 1000).
