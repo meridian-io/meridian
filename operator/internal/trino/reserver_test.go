@@ -361,8 +361,7 @@ func TestReserver_WaitingDuplicateReturnsSameCluster(t *testing.T) {
 func TestReserver_ConflictWithDuplicateReturnsItsCluster(t *testing.T) {
 	s := newReserverScheme()
 	first := true
-	var c client.Client
-	c = fake.NewClientBuilder().WithScheme(s).
+	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(idleCluster("pool-a", "meridian", "default", time.Now().Add(-time.Hour)),
 			idleCluster("pool-b", "meridian", "default", time.Now())).
 		WithInterceptorFuncs(interceptor.Funcs{
